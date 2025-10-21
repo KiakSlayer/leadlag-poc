@@ -1,0 +1,8 @@
+ccxt
+kafka-python
+pandas
+numpy
+statsmodels
+pyarrow
+fastparquet
+python-dotenv
