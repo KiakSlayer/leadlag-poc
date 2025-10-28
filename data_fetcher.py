@@ -219,14 +219,16 @@ class DataFetcher:
     def align_timestamps(
         self,
         data_dict: Dict[str, pd.DataFrame],
-        method: str = "inner"
+        method: str = "inner",
+        tolerance: str = "1min"
     ) -> Dict[str, pd.DataFrame]:
         """
-        Align all dataframes to common timestamps
+        Align all dataframes to common timestamps with timezone and frequency normalization
 
         Args:
             data_dict: Dictionary of DataFrames
             method: Merge method ('inner' for intersection, 'outer' for union)
+            tolerance: Time tolerance for alignment (default: '1min')
 
         Returns:
             Dictionary with aligned DataFrames
@@ -234,14 +236,45 @@ class DataFetcher:
         if not data_dict:
             return {}
 
-        # Find common timestamp range
-        all_indices = [df.index for df in data_dict.values()]
+        # Step 1: Normalize all timestamps (remove timezone, round to minute)
+        normalized_data = {}
+        for name, df in data_dict.items():
+            df_copy = df.copy()
+
+            # Convert to timezone-naive UTC
+            if df_copy.index.tz is not None:
+                df_copy.index = df_copy.index.tz_convert('UTC').tz_localize(None)
+
+            # Round to nearest minute for alignment
+            df_copy.index = df_copy.index.round('1min')
+
+            # Remove any duplicate timestamps (keep first)
+            df_copy = df_copy[~df_copy.index.duplicated(keep='first')]
+
+            normalized_data[name] = df_copy
+
+        # Step 2: Find common timestamp range
+        all_indices = [df.index for df in normalized_data.values()]
 
         if method == "inner":
             # Use intersection of all timestamps
             common_index = all_indices[0]
             for idx in all_indices[1:]:
                 common_index = common_index.intersection(idx)
+
+            # If intersection is empty, try outer join with warning
+            if len(common_index) == 0:
+                print("⚠️  Warning: No exact timestamp overlap found.")
+                print("   Switching to 'outer' join with forward fill...")
+                print(f"   Asset date ranges:")
+                for name, df in normalized_data.items():
+                    print(f"     {name:15s}: {df.index.min()} to {df.index.max()} ({len(df)} points)")
+
+                # Fall back to outer join
+                common_index = all_indices[0]
+                for idx in all_indices[1:]:
+                    common_index = common_index.union(idx)
+                common_index = common_index.sort_values()
         else:
             # Use union of all timestamps
             common_index = all_indices[0]
@@ -249,13 +282,43 @@ class DataFetcher:
                 common_index = common_index.union(idx)
             common_index = common_index.sort_values()
 
-        # Reindex all dataframes
+        # Step 3: Reindex all dataframes
         aligned_data = {}
-        for name, df in data_dict.items():
-            aligned_df = df.reindex(common_index, method='ffill')  # Forward fill gaps
+        for name, df in normalized_data.items():
+            # Use forward fill to handle missing values
+            aligned_df = df.reindex(common_index, method='ffill', limit=5)
+
+            # Drop rows with too many NaN values (more than 50% of columns)
+            threshold = len(aligned_df.columns) * 0.5
+            aligned_df = aligned_df.dropna(thresh=threshold)
+
             aligned_data[name] = aligned_df
 
+        # Step 4: Find common valid timestamps across all assets
+        # (timestamps where all assets have data)
+        if len(aligned_data) > 1:
+            valid_indices = None
+            for name, df in aligned_data.items():
+                valid_idx = df.dropna().index
+                if valid_indices is None:
+                    valid_indices = valid_idx
+                else:
+                    valid_indices = valid_indices.intersection(valid_idx)
+
+            # Filter all dataframes to only common valid timestamps
+            if valid_indices is not None and len(valid_indices) > 0:
+                aligned_data = {
+                    name: df.loc[valid_indices]
+                    for name, df in aligned_data.items()
+                }
+                common_index = valid_indices
+
         print(f"✓ Aligned data to {len(common_index)} common timestamps")
+
+        if len(common_index) < 10:
+            print(f"⚠️  Warning: Only {len(common_index)} common timestamps found!")
+            print("   Consider using longer time period or different interval")
+
         return aligned_data
 
     def get_close_prices(

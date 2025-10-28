@@ -27,6 +27,9 @@ class CorrelationAnalyzer:
 
     def _calculate_returns(self) -> pd.DataFrame:
         """Calculate log returns for all assets"""
+        if self.prices.empty or len(self.prices) < 2:
+            return pd.DataFrame()
+
         returns = np.log(self.prices / self.prices.shift(1))
         return returns.dropna()
 
@@ -198,6 +201,15 @@ class CorrelationAnalyzer:
             })
 
         df = pd.DataFrame(results)
+
+        # Handle empty DataFrame
+        if df.empty or len(df) == 0:
+            # Return empty DataFrame with expected columns
+            return pd.DataFrame(columns=[
+                'pair', 'leader', 'lagger', 'base_correlation',
+                'lag_periods', 'max_correlation', 'relationship'
+            ])
+
         return df.sort_values('max_correlation', ascending=False, key=abs)
 
     def rolling_correlation(

@@ -106,7 +106,18 @@ def run_full_analysis(
     print(f"\n✓ Data collection complete")
     print(f"  - Assets: {len(prices.columns)}")
     print(f"  - Time points: {len(prices)}")
-    print(f"  - Date range: {prices.index.min()} to {prices.index.max()}")
+
+    if len(prices) == 0:
+        print("  - Date range: No data available")
+        print("\n✗ Error: No common timestamps found after alignment!")
+        print("\n💡 Suggestions:")
+        print("   1. Try using a longer time period (--period 7d or --period 1mo)")
+        print("   2. Use a larger interval (--interval 5m or --interval 15m)")
+        print("   3. Use crypto-only analysis (remove --equity symbols)")
+        print("   4. Check if market is currently open for equity indices")
+        return None
+    else:
+        print(f"  - Date range: {prices.index.min()} to {prices.index.max()}")
 
     # ----------------------------------------------------------------
     print("\n\n🔗 STEP 2: CORRELATION ANALYSIS")
@@ -133,6 +144,16 @@ def run_full_analysis(
     )
 
     print(f"\n✓ Found {len(best_pairs)} crypto-index pairs with |corr| >= {min_correlation}")
+
+    if len(best_pairs) == 0:
+        print("\n⚠️  No pairs found with sufficient correlation!")
+        print("\n💡 Suggestions:")
+        print(f"   1. Lower the correlation threshold (current: {min_correlation})")
+        print("   2. Ensure you have overlapping data between crypto and indices")
+        print("   3. Try crypto-crypto pairs instead of crypto-index pairs")
+        print("\nExiting analysis...")
+        return None
+
     print("\nTop Correlated Pairs:")
     for crypto, index, corr in best_pairs[:5]:
         print(f"  {crypto:15s} <-> {index:10s}: {corr:+.4f}")
@@ -142,7 +163,15 @@ def run_full_analysis(
     lead_lag_analysis = analyzer.analyze_all_pairs(best_pairs[:5], max_lag=max_lag)
 
     print("\n✓ Lead-Lag Analysis Results:")
-    print(lead_lag_analysis.to_string(index=False))
+    if len(lead_lag_analysis) > 0:
+        print(lead_lag_analysis.to_string(index=False))
+    else:
+        print("  (No results)")
+
+    if len(lead_lag_analysis) == 0:
+        print("\n⚠️  No pairs available for strategy execution.")
+        print("Exiting analysis...")
+        return None
 
     # ----------------------------------------------------------------
     print("\n\n📈 STEP 3: STRATEGY EXECUTION")
