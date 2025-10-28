@@ -235,8 +235,32 @@ class CrossAssetLeadLagModel:
 
         # Align on common index
         common_idx = r_leader.index.intersection(r_lagger.index)
+
+        # Check if there's any common data
+        if len(common_idx) == 0:
+            print(f"⚠️  Warning: No common timestamps between {leader} and {lagger}")
+            # Return empty DataFrame with expected structure
+            empty_df = pd.DataFrame(columns=[
+                'r_leader', 'r_lagger', 'beta', 'spread',
+                'spread_mean', 'spread_std', 'zscore', 'signal'
+            ])
+            empty_df.index.name = 'timestamp'
+            return empty_df
+
         r_leader = r_leader.loc[common_idx]
         r_lagger = r_lagger.loc[common_idx]
+
+        # Check if we have enough data for the window
+        if len(r_leader) < self.config.window:
+            print(f"⚠️  Warning: Insufficient data for {leader}-{lagger}")
+            print(f"   Need at least {self.config.window} points, got {len(r_leader)}")
+            # Return empty DataFrame
+            empty_df = pd.DataFrame(columns=[
+                'r_leader', 'r_lagger', 'beta', 'spread',
+                'spread_mean', 'spread_std', 'zscore', 'signal'
+            ])
+            empty_df.index.name = 'timestamp'
+            return empty_df
 
         # Initialize results
         results = []
@@ -288,7 +312,20 @@ class CrossAssetLeadLagModel:
                 'signal': signal
             })
 
+        # Create DataFrame from results
         df_signals = pd.DataFrame(results)
+
+        # Handle empty results
+        if df_signals.empty or len(df_signals) == 0:
+            # Return empty DataFrame with expected structure
+            empty_df = pd.DataFrame(columns=[
+                'r_leader', 'r_lagger', 'beta', 'spread',
+                'spread_mean', 'spread_std', 'zscore', 'signal'
+            ])
+            empty_df.index.name = 'timestamp'
+            return empty_df
+
+        # Set timestamp as index
         df_signals.set_index('timestamp', inplace=True)
 
         return df_signals

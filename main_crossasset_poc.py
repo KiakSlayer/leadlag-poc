@@ -206,6 +206,12 @@ def run_full_analysis(
         print(f"\n  Running Z-score model...")
         signals = model.run_strategy(prices, leader, lagger, lag)
 
+        # Check if signals were generated
+        if signals.empty or len(signals) == 0:
+            print(f"\n  ⚠️  No signals generated for this pair (insufficient data)")
+            print(f"  Skipping to next pair...\n")
+            continue
+
         # Signal summary
         signal_counts = signals['signal'].value_counts()
         print(f"\n  Signal Distribution:")
@@ -244,6 +250,17 @@ def run_full_analysis(
             'backtest': backtest_results,
             'metrics': metrics
         }
+
+    # Check if any results were generated
+    if len(all_results) == 0:
+        print("\n\n⚠️  No valid results generated for any pairs!")
+        print("   All pairs had insufficient data for analysis.")
+        print("\n💡 Suggestions:")
+        print("   1. Use a longer time period (--period 7d or --period 1mo)")
+        print("   2. Use a larger interval (--interval 5m or --interval 15m)")
+        print("   3. Reduce the window size (--window 30)")
+        print("   4. Try crypto-crypto pairs instead")
+        return None
 
     # ----------------------------------------------------------------
     print("\n\n📊 STEP 4: VISUALIZATION")
