@@ -111,20 +111,34 @@ class DataFetcher:
                 print(f"✗ No data returned for {symbol}")
                 return pd.DataFrame()
 
-            # Standardize column names
-            df.columns = df.columns.str.lower()
-            df = df.rename(columns={'date': 'timestamp'})
-
-            # Reset index to get timestamp as column
+            # Reset index first to get datetime as a column
             df.reset_index(inplace=True)
-            if 'datetime' in df.columns:
-                df = df.rename(columns={'datetime': 'timestamp'})
 
-            # Ensure timestamp is datetime
-            if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Standardize column names to lowercase
+            df.columns = df.columns.str.lower()
 
-            df.set_index('timestamp', inplace=True)
+            # The datetime column could be named 'date', 'datetime', or 'index'
+            # Find it and rename to 'timestamp'
+            datetime_col = None
+            for col in df.columns:
+                if col in ['date', 'datetime', 'index']:
+                    datetime_col = col
+                    break
+
+            if datetime_col:
+                df = df.rename(columns={datetime_col: 'timestamp'})
+            elif 'timestamp' not in df.columns:
+                # If still no timestamp column found, assume first column is datetime
+                df = df.rename(columns={df.columns[0]: 'timestamp'})
+
+            # Ensure timestamp is datetime type
+            if 'timestamp' in df.columns:
+                if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df.set_index('timestamp', inplace=True)
+            else:
+                print(f"✗ Could not identify timestamp column for {symbol}")
+                return pd.DataFrame()
 
             # Keep only essential columns
             cols_to_keep = ['open', 'high', 'low', 'close', 'volume']
