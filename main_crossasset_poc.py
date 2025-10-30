@@ -24,6 +24,8 @@ from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
+import pandas as pd
+
 # Import all modules
 from data_fetcher import DataFetcher
 from correlation_analyzer import CorrelationAnalyzer
@@ -130,48 +132,81 @@ def run_full_analysis(
     print("\nCorrelation Matrix:")
     print(corr_matrix)
 
-    # Find best pairs
+    # Categorize assets
     crypto_assets = [col for col in prices.columns if 'USDT' in col or 'BTC' in col]
     index_assets = [col for col in prices.columns if col not in crypto_assets]
 
     print(f"\nCrypto Assets: {crypto_assets}")
     print(f"Index Assets: {index_assets}")
 
-    best_pairs = analyzer.find_best_pairs(
-        crypto_assets,
-        index_assets,
-        min_correlation=min_correlation
-    )
+    pair_categories = []
 
-    print(f"\n✓ Found {len(best_pairs)} crypto-index pairs with |corr| >= {min_correlation}")
-
-    if len(best_pairs) == 0:
-        print("\n⚠️  No pairs found with sufficient correlation!")
-        print("\n💡 Suggestions:")
-        print(f"   1. Lower the correlation threshold (current: {min_correlation})")
-        print("   2. Ensure you have overlapping data between crypto and indices")
-        print("   3. Try crypto-crypto pairs instead of crypto-index pairs")
-        print("\nExiting analysis...")
-        return None
-
-    print("\nTop Correlated Pairs:")
-    for crypto, index, corr in best_pairs[:5]:
-        print(f"  {crypto:15s} <-> {index:10s}: {corr:+.4f}")
-
-    # Lead-lag analysis
-    print(f"\nAnalyzing lead-lag relationships (max_lag={max_lag})...")
-    lead_lag_analysis = analyzer.analyze_all_pairs(best_pairs[:5], max_lag=max_lag)
-
-    print("\n✓ Lead-Lag Analysis Results:")
-    if len(lead_lag_analysis) > 0:
-        print(lead_lag_analysis.to_string(index=False))
+    if len(crypto_assets) >= 2:
+        crypto_pairs = analyzer.find_intragroup_pairs(
+            crypto_assets,
+            min_correlation=min_correlation
+        )
+        pair_categories.append(("Crypto-Crypto", crypto_pairs))
     else:
-        print("  (No results)")
+        print("\n⚠️  Not enough crypto assets for crypto-crypto pairing")
 
-    if len(lead_lag_analysis) == 0:
+    if crypto_assets and index_assets:
+        crypto_index_pairs = analyzer.find_best_pairs(
+            crypto_assets,
+            index_assets,
+            min_correlation=min_correlation
+        )
+        pair_categories.append(("Crypto-Index", crypto_index_pairs))
+    else:
+        print("\n⚠️  Missing crypto or index assets for cross pairing")
+
+    if len(index_assets) >= 2:
+        index_pairs = analyzer.find_intragroup_pairs(
+            index_assets,
+            min_correlation=min_correlation
+        )
+        pair_categories.append(("Index-Index", index_pairs))
+    else:
+        print("\n⚠️  Not enough index assets for index-index pairing")
+
+    analysis_by_category = {}
+    combined_analysis_frames = []
+
+    for category, pairs in pair_categories:
+        print(f"\n{category} pairs with |corr| >= {min_correlation}:")
+
+        if not pairs:
+            print("  (No pairs met the threshold)")
+            continue
+
+        for asset1, asset2, corr in pairs[:5]:
+            print(f"  {asset1:15s} <-> {asset2:15s}: {corr:+.4f}")
+
+        print(f"\nAnalyzing lead-lag relationships for {category} pairs (max_lag={max_lag})...")
+        analysis = analyzer.analyze_all_pairs(pairs[:5], max_lag=max_lag)
+
+        if analysis.empty:
+            print("  (No valid lead-lag relationships detected)")
+            continue
+
+        analysis_by_category[category] = analysis
+        combined_analysis_frames.append(analysis.assign(category=category))
+
+        print("\n✓ Lead-Lag Analysis Results:")
+        print(analysis.to_string(index=False))
+
+    if not analysis_by_category:
         print("\n⚠️  No pairs available for strategy execution.")
         print("Exiting analysis...")
         return None
+
+    if combined_analysis_frames:
+        lead_lag_analysis = pd.concat(combined_analysis_frames, ignore_index=True)
+    else:
+        lead_lag_analysis = pd.DataFrame(columns=[
+            'pair', 'leader', 'lagger', 'base_correlation',
+            'lag_periods', 'max_correlation', 'relationship', 'category'
+        ])
 
     # ----------------------------------------------------------------
     print("\n\n📈 STEP 3: STRATEGY EXECUTION")
@@ -189,14 +224,26 @@ def run_full_analysis(
     # Store results for all pairs
     all_results = {}
 
-    # Run strategy on top 3 pairs
-    for idx, row in lead_lag_analysis.head(3).iterrows():
+    # Select the top pair from each category
+    selected_pairs = []
+    for category, analysis in analysis_by_category.items():
+        if not analysis.empty:
+            selected_pairs.append((category, analysis.iloc[0]))
+
+    if not selected_pairs:
+        print("\n⚠️  No qualifying pairs remained after lead-lag analysis.")
+        print("Exiting analysis...")
+        return None
+
+    for category, row in selected_pairs:
         leader = row['leader']
         lagger = row['lagger']
         lag = int(row['lag_periods'])
         pair_name = f"{leader}-{lagger}"
+        display_name = f"{category}: {pair_name}"
 
         print(f"\n{'─' * 67}")
+        print(f"Category: {category}")
         print(f"Pair: {pair_name}")
         print(f"Lead-Lag: {row['relationship']}")
         print(f"Correlation: {row['max_correlation']:.4f}")
@@ -242,13 +289,14 @@ def run_full_analysis(
         print(f"    {'─' * 60}")
 
         # Store results
-        all_results[pair_name] = {
+        all_results[display_name] = {
             'leader': leader,
             'lagger': lagger,
             'lag': lag,
             'signals': signals,
             'backtest': backtest_results,
-            'metrics': metrics
+            'metrics': metrics,
+            'category': category
         }
 
     # Check if any results were generated
@@ -295,12 +343,14 @@ def run_full_analysis(
     # Summary table
     print("\n📋 SUMMARY TABLE:")
     print("=" * 67)
-    print(f"{'Pair':<25} {'Return %':>10} {'Sharpe':>8} {'MaxDD %':>10} {'Trades':>8}")
+    print(f"{'Category':<15} {'Pair':<25} {'Return %':>10} {'Sharpe':>8} {'MaxDD %':>10} {'Trades':>8}")
     print("─" * 67)
 
-    for pair_name, result in all_results.items():
+    for display_name, result in all_results.items():
         m = result['metrics']
-        print(f"{pair_name:<25} {m.get('total_return_pct', 0):>10.2f} "
+        category = result.get('category', 'N/A')
+        pair_name = f"{result['leader']}-{result['lagger']}"
+        print(f"{category:<15} {pair_name:<25} {m.get('total_return_pct', 0):>10.2f} "
               f"{m.get('sharpe_ratio', 0):>8.2f} {m.get('max_drawdown_pct', 0):>10.2f} "
               f"{m.get('num_trades', 0):>8d}")
 

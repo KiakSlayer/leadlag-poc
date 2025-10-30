@@ -90,6 +90,33 @@ class CorrelationAnalyzer:
 
         return pairs
 
+    def find_intragroup_pairs(
+        self,
+        assets: List[str],
+        min_correlation: float = 0.3
+    ) -> List[Tuple[str, str, float]]:
+        """Find the strongest correlations within a single asset group."""
+        if not assets:
+            return []
+
+        corr_matrix = self.calculate_correlation_matrix()
+        pairs: List[Tuple[str, str, float]] = []
+
+        for i, asset1 in enumerate(assets):
+            if asset1 not in corr_matrix.columns:
+                continue
+            for asset2 in assets[i + 1:]:
+                if asset2 not in corr_matrix.columns:
+                    continue
+
+                corr_value = corr_matrix.loc[asset1, asset2]
+
+                if abs(corr_value) >= min_correlation:
+                    pairs.append((asset1, asset2, corr_value))
+
+        pairs.sort(key=lambda x: abs(x[2]), reverse=True)
+        return pairs
+
     def detect_lead_lag(
         self,
         asset1: str,
