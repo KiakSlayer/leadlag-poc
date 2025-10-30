@@ -117,44 +117,29 @@ class CorrelationAnalyzer:
         returns1 = returns1.loc[common_idx]
         returns2 = returns2.loc[common_idx]
 
-        correlations = []
-        lags = range(-max_lag, max_lag + 1)
+        best_lag = 0
+        best_corr = 0.0
 
-        for lag in lags:
-            if lag < 0:
-                # asset2 leads asset1
-                r1 = returns1.iloc[-lag:]
-                r2 = returns2.iloc[:lag]
-            elif lag > 0:
-                # asset1 leads asset2
-                r1 = returns1.iloc[:-lag]
-                r2 = returns2.iloc[lag:]
-            else:
-                r1 = returns1
-                r2 = returns2
+        for lag in range(-max_lag, max_lag + 1):
+            shifted_returns2 = returns2.shift(-lag)
+            aligned = pd.concat([returns1, shifted_returns2], axis=1, join="inner").dropna()
 
-            # Align indices
-            common = r1.index.intersection(r2.index)
-            if len(common) < 10:  # Need minimum data points
-                correlations.append(0.0)
+            if len(aligned) < 10:
                 continue
 
-            r1_aligned = r1.loc[common]
-            r2_aligned = r2.loc[common]
-
             try:
-                corr, _ = pearsonr(r1_aligned, r2_aligned)
-                correlations.append(corr if np.isfinite(corr) else 0.0)
-            except:
-                correlations.append(0.0)
+                corr, _ = pearsonr(aligned.iloc[:, 0], aligned.iloc[:, 1])
+            except Exception:
+                corr = np.nan
 
-        # Find lag with maximum absolute correlation
-        abs_corrs = [abs(c) for c in correlations]
-        max_idx = np.argmax(abs_corrs)
-        optimal_lag = lags[max_idx]
-        max_correlation = correlations[max_idx]
+            if not np.isfinite(corr):
+                continue
 
-        return optimal_lag, max_correlation
+            if abs(corr) > abs(best_corr):
+                best_corr = corr
+                best_lag = lag
+
+        return best_lag, best_corr
 
     def analyze_all_pairs(
         self,

@@ -51,9 +51,9 @@ class DataFetcher:
             "limit": limit
         }
 
-        if start_time:
+        if start_time is not None:
             params["startTime"] = start_time
-        if end_time:
+        if end_time is not None:
             params["endTime"] = end_time
 
         try:
@@ -289,8 +289,9 @@ class DataFetcher:
             aligned_df = df.reindex(common_index, method='ffill', limit=5)
 
             # Drop rows with too many NaN values (more than 50% of columns)
-            threshold = len(aligned_df.columns) * 0.5
-            aligned_df = aligned_df.dropna(thresh=threshold)
+            min_non_na = int(np.ceil(len(aligned_df.columns) * 0.5)) if len(aligned_df.columns) else 0
+            if min_non_na > 0:
+                aligned_df = aligned_df.dropna(thresh=min_non_na)
 
             aligned_data[name] = aligned_df
 
