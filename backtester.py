@@ -185,7 +185,9 @@ class Backtester:
         prev_signal = "FLAT"
 
         for timestamp, row in signals_df.iterrows():
-            signal = row['signal']
+            signal = row.get('signal', prev_signal)
+            if not isinstance(signal, str) or signal == "HOLD" or signal is None:
+                signal = prev_signal
 
             # Get current prices
             if timestamp not in prices.index:
@@ -193,95 +195,74 @@ class Backtester:
                     'timestamp': timestamp,
                     'capital': capital,
                     'position_value': 0.0,
-                    'total_equity': capital
+                    'total_equity': capital,
+                    'position_leader': position_leader,
+                    'position_lagger': position_lagger,
+                    'signal': prev_signal
                 })
                 continue
 
             price_leader = prices.loc[timestamp, leader]
             price_lagger = prices.loc[timestamp, lagger]
 
-            # Calculate current position value
-            position_value = (
-                position_leader * price_leader +
-                position_lagger * price_lagger
-            )
-
-            # Total equity
-            total_equity = capital + position_value
-
             # Execute trades based on signal changes
-            if signal != prev_signal and signal != "HOLD":
-                # Close existing positions
+            if signal != prev_signal:
+                # Close existing positions first
                 if position_leader != 0 or position_lagger != 0:
-                    pnl = position_value
-                    capital += pnl
+                    capital_before_close = capital
+                    close_value_leader = position_leader * price_leader
+                    close_value_lagger = position_lagger * price_lagger
+                    capital += close_value_leader + close_value_lagger
 
-                    # Transaction costs
-                    cost = abs(position_leader * price_leader) + abs(position_lagger * price_lagger)
-                    capital -= cost * self.config.transaction_cost
+                    close_notional = abs(close_value_leader) + abs(close_value_lagger)
+                    if close_notional > 0:
+                        capital -= close_notional * self.config.transaction_cost
 
                     trades.append({
                         'timestamp': timestamp,
                         'action': 'CLOSE',
                         'signal': prev_signal,
-                        'pnl': pnl,
+                        'pnl': capital - capital_before_close,
                         'capital': capital
                     })
 
                     position_leader = 0.0
                     position_lagger = 0.0
 
-                # Open new positions
-                if signal == "LONG_leader_SHORT_lagger":
-                    # Long leader, short lagger
-                    position_size_usd = capital * self.config.position_size
+                # Open new position if required
+                if signal in {"LONG_leader_SHORT_lagger", "SHORT_leader_LONG_lagger"}:
+                    available_capital = capital
+                    position_size_usd = available_capital * self.config.position_size
 
-                    # Equal notional on both legs
-                    position_leader = position_size_usd / price_leader
-                    position_lagger = -position_size_usd / price_lagger
+                    if position_size_usd > 0:
+                        if signal == "LONG_leader_SHORT_lagger":
+                            qty_leader = position_size_usd / price_leader
+                            qty_lagger = -position_size_usd / price_lagger
+                        else:
+                            qty_leader = -position_size_usd / price_leader
+                            qty_lagger = position_size_usd / price_lagger
 
-                    # Deduct from capital
-                    capital -= position_size_usd
+                        capital -= qty_leader * price_leader
+                        capital -= qty_lagger * price_lagger
 
-                    # Transaction costs
-                    cost = 2 * position_size_usd * self.config.transaction_cost
-                    capital -= cost
+                        open_notional = abs(qty_leader * price_leader) + abs(qty_lagger * price_lagger)
+                        if open_notional > 0:
+                            capital -= open_notional * self.config.transaction_cost
 
-                    trades.append({
-                        'timestamp': timestamp,
-                        'action': 'OPEN',
-                        'signal': signal,
-                        'pnl': 0.0,
-                        'capital': capital
-                    })
+                        position_leader = qty_leader
+                        position_lagger = qty_lagger
 
-                elif signal == "SHORT_leader_LONG_lagger":
-                    # Short leader, long lagger
-                    position_size_usd = capital * self.config.position_size
+                        trades.append({
+                            'timestamp': timestamp,
+                            'action': 'OPEN',
+                            'signal': signal,
+                            'pnl': 0.0,
+                            'capital': capital
+                        })
 
-                    position_leader = -position_size_usd / price_leader
-                    position_lagger = position_size_usd / price_lagger
+                prev_signal = signal
 
-                    capital -= position_size_usd
-
-                    cost = 2 * position_size_usd * self.config.transaction_cost
-                    capital -= cost
-
-                    trades.append({
-                        'timestamp': timestamp,
-                        'action': 'OPEN',
-                        'signal': signal,
-                        'pnl': 0.0,
-                        'capital': capital
-                    })
-
-                elif signal == "FLAT":
-                    # Already closed positions above
-                    pass
-
-            prev_signal = signal
-
-            # Recalculate position value and equity
+            # Calculate current position value
             position_value = (
                 position_leader * price_leader +
                 position_lagger * price_lagger
