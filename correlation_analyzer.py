@@ -7,8 +7,9 @@ Computes correlations and lead-lag relationships between asset pairs
 import pandas as pd
 import numpy as np
 from itertools import combinations, product
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Sequence
 from scipy.stats import pearsonr
+from statsmodels.tsa.stattools import coint
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -98,6 +99,85 @@ class CorrelationAnalyzer:
 
         pairs.sort(key=lambda x: abs(x[2]), reverse=True)
         return pairs
+
+    def filter_cointegrated_pairs(
+        self,
+        pairs: Sequence[Tuple[str, str, float]],
+        significance_level: float = 0.05,
+        max_lag: Optional[int] = None,
+        autolag: str = "aic",
+        min_samples: int = 60,
+    ) -> pd.DataFrame:
+        """Filter candidate pairs using the Engle-Granger cointegration test.
+
+        Args:
+            pairs: Iterable of (asset1, asset2, correlation) tuples.
+            significance_level: Maximum p-value threshold to accept a pair.
+            max_lag: Optional maximum lag parameter forwarded to ``statsmodels``.
+            autolag: Information criterion for lag selection.
+            min_samples: Minimum number of overlapping observations required to
+                evaluate cointegration.
+
+        Returns:
+            DataFrame with the surviving pairs sorted by p-value and
+            correlation strength. The columns include ``asset1``, ``asset2``,
+            ``correlation``, ``p_value`` and the Engle-Granger test statistic.
+        """
+
+        qualified_pairs: List[Dict[str, float]] = []
+
+        for asset1, asset2, corr_value in pairs:
+            if asset1 not in self.prices.columns or asset2 not in self.prices.columns:
+                continue
+
+            pair_prices = self.prices[[asset1, asset2]].dropna()
+
+            if len(pair_prices) < min_samples:
+                continue
+
+            series1 = np.log(pair_prices[asset1].astype(float))
+            series2 = np.log(pair_prices[asset2].astype(float))
+
+            try:
+                stat, p_value, crit_values = coint(
+                    series1,
+                    series2,
+                    trend="c",
+                    maxlag=max_lag,
+                    autolag=autolag,
+                )
+            except Exception:
+                continue
+
+            if not np.isfinite(p_value):
+                continue
+
+            if p_value < significance_level:
+                qualified_pairs.append(
+                    {
+                        "asset1": asset1,
+                        "asset2": asset2,
+                        "correlation": corr_value,
+                        "p_value": float(p_value),
+                        "test_stat": float(stat),
+                        "crit_value_5pct": float(crit_values[1]) if len(crit_values) > 1 else np.nan,
+                    }
+                )
+
+        if not qualified_pairs:
+            return pd.DataFrame(
+                columns=[
+                    "asset1",
+                    "asset2",
+                    "correlation",
+                    "p_value",
+                    "test_stat",
+                    "crit_value_5pct",
+                ]
+            )
+
+        df_pairs = pd.DataFrame(qualified_pairs)
+        return df_pairs.sort_values(["p_value", "correlation"], ascending=[True, False])
 
     def find_best_pairs(
         self,
