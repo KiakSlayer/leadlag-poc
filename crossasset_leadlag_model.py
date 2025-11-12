@@ -20,6 +20,9 @@ class ModelConfig:
     z_entry: float = 2.0  # Z-score threshold for entry
     z_exit: float = 0.5  # Z-score threshold for exit
     lag_periods: int = 0  # Lead-lag offset (positive if leader leads)
+    beta_method: str = 'fixed'  # Beta calculation method: 'fixed', 'rolling', 'ema'
+    beta_lookback: int = 60  # Lookback period for beta calculation
+    beta_halflife: int = 30  # Half-life for exponential moving average (EMA) beta
 
 
 class CrossAssetLeadLagModel:
@@ -83,6 +86,79 @@ class CrossAssetLeadLagModel:
 
         beta = cov / var_lagger
         return beta
+
+    def update_beta(
+        self,
+        r_leader_series: pd.Series,
+        r_lagger_series: pd.Series,
+        current_idx: int,
+        prev_beta: Optional[float] = None
+    ) -> float:
+        """
+        Calculate adaptive beta using configured method
+
+        KEY FUNCTION for Kiak's deliverable!
+        Supports:
+        - 'fixed': Traditional fixed beta over entire window
+        - 'rolling': Rolling window beta (updates each period)
+        - 'ema': Exponentially weighted moving average beta
+
+        Args:
+            r_leader_series: Full leader returns series
+            r_lagger_series: Full lagger returns series
+            current_idx: Current index position
+            prev_beta: Previous beta value (for EMA)
+
+        Returns:
+            Updated beta value
+        """
+        method = self.config.beta_method
+        lookback = self.config.beta_lookback
+
+        if method == 'fixed':
+            # Traditional: use entire window
+            start_idx = max(0, current_idx - self.config.window + 1)
+            window_leader = r_leader_series.iloc[start_idx:current_idx + 1].values
+            window_lagger = r_lagger_series.iloc[start_idx:current_idx + 1].values
+            return self.calculate_beta(window_leader, window_lagger)
+
+        elif method == 'rolling':
+            # Rolling: use only lookback period
+            start_idx = max(0, current_idx - lookback + 1)
+            window_leader = r_leader_series.iloc[start_idx:current_idx + 1].values
+            window_lagger = r_lagger_series.iloc[start_idx:current_idx + 1].values
+            return self.calculate_beta(window_leader, window_lagger)
+
+        elif method == 'ema':
+            # Exponential Moving Average beta
+            # β_t = α * β_current + (1 - α) * β_t-1
+            # where α = 1 - exp(-1/halflife)
+
+            halflife = self.config.beta_halflife
+            alpha = 1 - np.exp(-1 / halflife)
+
+            # Calculate current beta
+            start_idx = max(0, current_idx - lookback + 1)
+            window_leader = r_leader_series.iloc[start_idx:current_idx + 1].values
+            window_lagger = r_lagger_series.iloc[start_idx:current_idx + 1].values
+            current_beta = self.calculate_beta(window_leader, window_lagger)
+
+            if prev_beta is None or not np.isfinite(prev_beta):
+                return current_beta
+
+            if not np.isfinite(current_beta):
+                return prev_beta
+
+            # Exponentially weighted update
+            ema_beta = alpha * current_beta + (1 - alpha) * prev_beta
+            return ema_beta
+
+        else:
+            # Default to fixed if unknown method
+            start_idx = max(0, current_idx - self.config.window + 1)
+            window_leader = r_leader_series.iloc[start_idx:current_idx + 1].values
+            window_lagger = r_lagger_series.iloc[start_idx:current_idx + 1].values
+            return self.calculate_beta(window_leader, window_lagger)
 
     def calculate_spread(
         self,
@@ -265,6 +341,8 @@ class CrossAssetLeadLagModel:
         # Initialize results
         results = []
         prev_state = "FLAT"
+        prev_signal = "FLAT"
+        prev_beta = None  # For EMA beta tracking
 
         # Rolling window calculation
         for i in range(len(r_leader)):
@@ -289,8 +367,9 @@ class CrossAssetLeadLagModel:
             window_leader = r_leader.iloc[start_idx:i + 1].values
             window_lagger = r_lagger.iloc[start_idx:i + 1].values
 
-            # Calculate beta
-            beta = self.calculate_beta(window_leader, window_lagger)
+            # Calculate beta using adaptive method (Kiak's enhancement!)
+            beta = self.update_beta(r_leader, r_lagger, i, prev_beta)
+            prev_beta = beta  # Store for next iteration (EMA)
 
             # Calculate spread
             spread = self.calculate_spread(window_leader, window_lagger, beta)
