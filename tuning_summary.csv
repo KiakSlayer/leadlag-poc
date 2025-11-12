@@ -1,0 +1,2 @@
+total_configs_tested,unique_param_combinations,best_interval,best_window,best_z_entry,best_z_exit,recommended_sharpe,recommended_robustness,recommended_return,recommended_drawdown
+54,18,1h,120,2.5,0.3,-0.7551866702599112,-20.786229406874376,-5.565008383616662,-17.028555765877105
