@@ -318,7 +318,7 @@ class CrossAssetLeadLagModel:
             # Return empty DataFrame with expected structure
             empty_df = pd.DataFrame(columns=[
                 'r_leader', 'r_lagger', 'beta', 'spread',
-                'spread_mean', 'spread_std', 'zscore', 'signal'
+                'spread_mean', 'spread_std', 'zscore', 'signal', 'raw_signal'
             ])
             empty_df.index.name = 'timestamp'
             return empty_df
@@ -333,20 +333,21 @@ class CrossAssetLeadLagModel:
             # Return empty DataFrame
             empty_df = pd.DataFrame(columns=[
                 'r_leader', 'r_lagger', 'beta', 'spread',
-                'spread_mean', 'spread_std', 'zscore', 'signal'
+                'spread_mean', 'spread_std', 'zscore', 'signal', 'raw_signal'
             ])
             empty_df.index.name = 'timestamp'
             return empty_df
 
         # Initialize results
         results = []
+        prev_state = "FLAT"
         prev_signal = "FLAT"
         prev_beta = None  # For EMA beta tracking
 
         # Rolling window calculation
         for i in range(len(r_leader)):
-            if i < self.config.window:
-                # Not enough data yet
+            if i < self.config.window - 1:
+                # Not enough data yet to form a full window
                 results.append({
                     'timestamp': r_leader.index[i],
                     'r_leader': r_leader.iloc[i],
@@ -356,13 +357,15 @@ class CrossAssetLeadLagModel:
                     'spread_mean': np.nan,
                     'spread_std': np.nan,
                     'zscore': np.nan,
-                    'signal': "HOLD"
+                    'signal': prev_state,
+                    'raw_signal': "HOLD"
                 })
                 continue
 
             # Get window data
-            window_leader = r_leader.iloc[i - self.config.window:i + 1].values
-            window_lagger = r_lagger.iloc[i - self.config.window:i + 1].values
+            start_idx = i - (self.config.window - 1)
+            window_leader = r_leader.iloc[start_idx:i + 1].values
+            window_lagger = r_lagger.iloc[start_idx:i + 1].values
 
             # Calculate beta using adaptive method (Kiak's enhancement!)
             beta = self.update_beta(r_leader, r_lagger, i, prev_beta)
@@ -375,8 +378,13 @@ class CrossAssetLeadLagModel:
             spread_mean, spread_std, zscore = self.calculate_zscore(spread)
 
             # Generate signal
-            signal = self.generate_signal(zscore, prev_signal)
-            prev_signal = signal
+            raw_signal = self.generate_signal(zscore, prev_state)
+            if raw_signal == "HOLD":
+                signal = prev_state
+            else:
+                signal = raw_signal
+
+            prev_state = signal
 
             results.append({
                 'timestamp': r_leader.index[i],
@@ -387,7 +395,8 @@ class CrossAssetLeadLagModel:
                 'spread_mean': spread_mean,
                 'spread_std': spread_std,
                 'zscore': zscore,
-                'signal': signal
+                'signal': signal,
+                'raw_signal': raw_signal
             })
 
         # Create DataFrame from results
@@ -398,7 +407,7 @@ class CrossAssetLeadLagModel:
             # Return empty DataFrame with expected structure
             empty_df = pd.DataFrame(columns=[
                 'r_leader', 'r_lagger', 'beta', 'spread',
-                'spread_mean', 'spread_std', 'zscore', 'signal'
+                'spread_mean', 'spread_std', 'zscore', 'signal', 'raw_signal'
             ])
             empty_df.index.name = 'timestamp'
             return empty_df
