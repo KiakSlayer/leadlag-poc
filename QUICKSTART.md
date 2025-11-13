@@ -2,7 +2,7 @@
 
 ## ✅ What's Been Fixed
 
-The **timestamp column handling bug** in `data_fetcher.py` has been fixed! The error:
+The **timestamp column handling bug** in `core/data_fetcher.py` has been fixed! The error:
 ```
 ✗ Error fetching ^GSPC from Yahoo Finance: 'timestamp'
 ```
@@ -106,7 +106,7 @@ signals = model.run_strategy(prices, 'BTCUSDT', 'SP500', lag=0)
 Verify the timestamp fix works:
 
 ```bash
-python test_data_fetcher_fix.py
+python legacy/test_data_fetcher_fix.py
 ```
 
 Expected output:
@@ -157,8 +157,8 @@ df.columns = df.columns.str.lower()  # Then lowercase
 
 ## 📁 New Files
 
-- ✅ `data_fetcher.py` - Fixed timestamp handling
-- ✅ `test_data_fetcher_fix.py` - Verification test
+- ✅ `core/data_fetcher.py` - Fixed timestamp handling
+- ✅ `legacy/test_data_fetcher_fix.py` - Verification test
 - ✅ `INSTALLATION_NOTES.md` - Detailed installation help
 - ✅ `QUICKSTART.md` - This file
 
@@ -192,8 +192,8 @@ python -c "import yfinance; print(yfinance.__version__)"
 
 ## ✅ Verification Checklist
 
-- [x] Core code fixed (`data_fetcher.py`)
-- [x] Test created (`test_data_fetcher_fix.py`)
+- [x] Core code fixed (`core/data_fetcher.py`)
+- [x] Test created (`legacy/test_data_fetcher_fix.py`)
 - [x] Documentation updated
 - [x] Alternative approaches provided
 - [x] Changes committed and pushed

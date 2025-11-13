@@ -12,7 +12,7 @@
 ## 📋 Deliverables Completed
 
 ### ✅ 1. Engle-Granger Cointegration Test
-**File:** `correlation_analyzer.py` (Lines 284-470)
+**File:** `core/correlation_analyzer.py` (Lines 284-470)
 
 Added three new methods:
 
@@ -45,7 +45,7 @@ Engle-Granger Test:
 ---
 
 ### ✅ 2. Adaptive Beta (Rolling + EMA)
-**File:** `crossasset_leadlag_model.py`
+**File:** `core/crossasset_leadlag_model.py`
 
 #### ModelConfig Enhancement (Lines 16-25)
 Added three new parameters:
@@ -354,8 +354,8 @@ where:
 
 | File | Type | Description |
 |------|------|-------------|
-| `correlation_analyzer.py` | Modified | +187 lines - Cointegration testing |
-| `crossasset_leadlag_model.py` | Modified | +75 lines - Adaptive beta |
+| `core/correlation_analyzer.py` | Modified | +187 lines - Cointegration testing |
+| `core/crossasset_leadlag_model.py` | Modified | +75 lines - Adaptive beta |
 | `kiak_cointegration_comparison.py` | New | 359 lines - Comparison framework |
 | `cointegration_results.ipynb` | New | Jupyter notebook - Interactive demo |
 | `KIAK_DELIVERABLE_SUMMARY.md` | New | This file - Documentation |

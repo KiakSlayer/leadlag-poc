@@ -81,10 +81,10 @@ You can test the core functionality without yfinance:
 
 ```bash
 # Test individual modules
-python test_data_fetcher_fix.py      # Tests the timestamp fix
-python correlation_analyzer.py       # Requires pandas only
-python crossasset_leadlag_model.py   # Requires pandas only
-python backtester.py                 # Requires pandas only
+python legacy/test_data_fetcher_fix.py      # Tests the timestamp fix
+python core/correlation_analyzer.py       # Requires pandas only
+python core/crossasset_leadlag_model.py   # Requires pandas only
+python core/backtester.py                 # Requires pandas only
 ```
 
 ## Minimal Installation for Testing
@@ -121,7 +121,7 @@ Test your installation:
 ```bash
 python -c "import pandas, numpy, matplotlib; print('✓ Core dependencies OK')"
 python -c "import yfinance; print('✓ yfinance OK')"
-python test_data_fetcher_fix.py
+python legacy/test_data_fetcher_fix.py
 ```
 
 ## Support

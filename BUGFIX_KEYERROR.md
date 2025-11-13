@@ -11,7 +11,7 @@ KeyError: "None of ['timestamp'] are in the columns"
 ```
 File "main_crossasset_poc.py", line 207, in run_full_analysis
     signals = model.run_strategy(prices, leader, lagger, lag)
-File "crossasset_leadlag_model.py", line 292, in run_strategy
+File "core/crossasset_leadlag_model.py", line 292, in run_strategy
     df_signals.set_index('timestamp', inplace=True)
 KeyError: "None of ['timestamp'] are in the columns"
 ```
@@ -81,7 +81,7 @@ if len(r_leader) < self.config.window:
 
 ### Fix 1: Validate Common Timestamps
 
-**Location:** `crossasset_leadlag_model.py:240-248`
+**Location:** `core/crossasset_leadlag_model.py:240-248`
 
 ```python
 # After finding common index
@@ -106,7 +106,7 @@ if len(common_idx) == 0:
 
 ### Fix 2: Validate Sufficient Data for Window
 
-**Location:** `crossasset_leadlag_model.py:253-263`
+**Location:** `core/crossasset_leadlag_model.py:253-263`
 
 ```python
 # After aligning data
@@ -126,7 +126,7 @@ if len(r_leader) < self.config.window:
 
 ### Fix 3: Handle Empty Results Before set_index
 
-**Location:** `crossasset_leadlag_model.py:294-307`
+**Location:** `core/crossasset_leadlag_model.py:294-307`
 
 ```python
 # Create DataFrame from results
@@ -194,7 +194,7 @@ if len(all_results) == 0:
 
 ## 🧪 Testing
 
-**Test File:** `test_empty_signals_fix.py`
+**Test File:** `legacy/test_empty_signals_fix.py`
 
 ### Test Results
 
@@ -241,7 +241,7 @@ Testing Empty Signals and Insufficient Data Handling
 Running Z-score model...
 
 Traceback (most recent call last):
-  File "crossasset_leadlag_model.py", line 292, in run_strategy
+  File "core/crossasset_leadlag_model.py", line 292, in run_strategy
     df_signals.set_index('timestamp', inplace=True)
 KeyError: "None of ['timestamp'] are in the columns"
 
@@ -380,9 +380,9 @@ python main_crossasset_poc.py --max-lag 3
 
 | File | Changes | Purpose |
 |------|---------|---------|
-| `crossasset_leadlag_model.py` | +46 lines | Added 3 validation gates |
+| `core/crossasset_leadlag_model.py` | +46 lines | Added 3 validation gates |
 | `main_crossasset_poc.py` | +17 lines | Added pair skipping logic |
-| `test_empty_signals_fix.py` | +128 lines | Comprehensive test suite |
+| `legacy/test_empty_signals_fix.py` | +128 lines | Comprehensive test suite |
 
 **Total:** 3 files, +191 lines
 

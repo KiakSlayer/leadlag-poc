@@ -21,10 +21,10 @@ import numpy as np
 from tqdm import tqdm
 
 # Import existing modules
-from data_fetcher import DataFetcher
-from correlation_analyzer import CorrelationAnalyzer
-from crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
-from backtester import Backtester, BacktestConfig
+from core.data_fetcher import DataFetcher
+from core.correlation_analyzer import CorrelationAnalyzer
+from core.crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
+from core.backtester import Backtester, BacktestConfig
 
 
 class ParameterTuner:

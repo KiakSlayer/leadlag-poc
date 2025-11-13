@@ -29,11 +29,11 @@ warnings.filterwarnings('ignore')
 import pandas as pd
 
 # Import all modules
-from data_fetcher import DataFetcher
-from correlation_analyzer import CorrelationAnalyzer
-from crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
-from backtester import Backtester, BacktestConfig
-from visualizer import StrategyVisualizer
+from core.data_fetcher import DataFetcher
+from core.correlation_analyzer import CorrelationAnalyzer
+from core.crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
+from core.backtester import Backtester, BacktestConfig
+from core.visualizer import StrategyVisualizer
 
 
 DEFAULT_CRYPTO_SYMBOLS: List[str] = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']

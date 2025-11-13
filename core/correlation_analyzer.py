@@ -624,7 +624,7 @@ class CorrelationAnalyzer:
 
 if __name__ == "__main__":
     # Test the correlation analyzer
-    from data_fetcher import DataFetcher
+    from core.data_fetcher import DataFetcher
 
     print("=" * 60)
     print("Testing Correlation Analyzer")
