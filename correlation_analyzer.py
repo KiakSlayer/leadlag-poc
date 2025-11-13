@@ -9,7 +9,7 @@ import numpy as np
 from itertools import combinations, product
 from typing import Dict, List, Tuple, Optional, Sequence
 from scipy.stats import pearsonr
-from statsmodels.tsa.stattools import coint
+from statsmodels.tsa.stattools import coint, adfuller
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -372,6 +372,194 @@ class CorrelationAnalyzer:
             'max_correlation': max_corr,
             'stability_score': stability_score
         }
+
+    def test_cointegration(
+        self,
+        asset1: str,
+        asset2: str,
+        significance_level: float = 0.05
+    ) -> Dict[str, any]:
+        """
+        Perform Engle-Granger cointegration test on two assets
+
+        Cointegration tests whether two non-stationary time series have a stable
+        long-term relationship. If cointegrated, the linear combination (spread)
+        is stationary, making mean-reversion strategies more reliable.
+
+        Args:
+            asset1: First asset name
+            asset2: Second asset name
+            significance_level: P-value threshold (default: 0.05)
+
+        Returns:
+            Dictionary with:
+                - cointegrated: Boolean (True if p-value < significance_level)
+                - p_value: P-value from Engle-Granger test
+                - test_statistic: Test statistic value
+                - critical_values: Dict of critical values at different levels
+                - hedge_ratio: Estimated hedge ratio (beta) from OLS
+        """
+        # Get price series
+        if asset1 not in self.prices.columns or asset2 not in self.prices.columns:
+            return {
+                'cointegrated': False,
+                'p_value': 1.0,
+                'test_statistic': 0.0,
+                'critical_values': {},
+                'hedge_ratio': 0.0,
+                'error': f'Asset not found'
+            }
+
+        series1 = self.prices[asset1].dropna()
+        series2 = self.prices[asset2].dropna()
+
+        # Align series
+        common_idx = series1.index.intersection(series2.index)
+        series1 = series1.loc[common_idx]
+        series2 = series2.loc[common_idx]
+
+        if len(series1) < 30:
+            return {
+                'cointegrated': False,
+                'p_value': 1.0,
+                'test_statistic': 0.0,
+                'critical_values': {},
+                'hedge_ratio': 0.0,
+                'error': 'Insufficient data (<30 points)'
+            }
+
+        try:
+            # Perform Engle-Granger cointegration test
+            # Returns: (test_statistic, p_value, critical_values)
+            test_stat, p_value, crit_values = coint(series1, series2)
+
+            # Calculate hedge ratio (OLS beta)
+            # y = alpha + beta * x
+            x = series2.values.reshape(-1, 1)
+            y = series1.values
+
+            # Simple OLS: beta = cov(x,y) / var(x)
+            x_mean = x.mean()
+            y_mean = y.mean()
+            cov_xy = ((x.flatten() - x_mean) * (y - y_mean)).mean()
+            var_x = ((x.flatten() - x_mean) ** 2).mean()
+
+            hedge_ratio = cov_xy / var_x if var_x != 0 else 0.0
+
+            # Format critical values dictionary
+            critical_values_dict = {}
+            if isinstance(crit_values, np.ndarray) and len(crit_values) >= 3:
+                critical_values_dict = {
+                    '1%': float(crit_values[0]),
+                    '5%': float(crit_values[1]),
+                    '10%': float(crit_values[2])
+                }
+
+            return {
+                'cointegrated': p_value < significance_level,
+                'p_value': float(p_value),
+                'test_statistic': float(test_stat),
+                'critical_values': critical_values_dict,
+                'hedge_ratio': float(hedge_ratio)
+            }
+
+        except Exception as e:
+            return {
+                'cointegrated': False,
+                'p_value': 1.0,
+                'test_statistic': 0.0,
+                'critical_values': {},
+                'hedge_ratio': 0.0,
+                'error': str(e)
+            }
+
+    def filter_cointegrated_pairs(
+        self,
+        pairs: List[Tuple[str, str, float]],
+        significance_level: float = 0.05,
+        verbose: bool = True
+    ) -> List[Tuple[str, str, float, Dict]]:
+        """
+        Filter pairs by cointegration test
+
+        This is the KEY FUNCTION for Kiak's deliverable!
+        Only keeps pairs that pass the Engle-Granger cointegration test (p < 0.05)
+
+        Args:
+            pairs: List of (asset1, asset2, correlation) tuples
+            significance_level: P-value threshold (default: 0.05)
+            verbose: Print detailed results
+
+        Returns:
+            List of (asset1, asset2, correlation, coint_results) tuples
+            Only includes cointegrated pairs
+        """
+        cointegrated_pairs = []
+
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"🧪 COINTEGRATION TEST (Engle-Granger)")
+            print(f"   Significance Level: {significance_level}")
+            print(f"   Testing {len(pairs)} pairs...")
+            print(f"{'='*70}\n")
+
+        for asset1, asset2, correlation in pairs:
+            coint_result = self.test_cointegration(asset1, asset2, significance_level)
+
+            if verbose:
+                status = "✓ PASS" if coint_result['cointegrated'] else "✗ FAIL"
+                print(f"{status} | {asset1:15s} <-> {asset2:10s}")
+                print(f"        P-value: {coint_result['p_value']:.4f} | Corr: {correlation:+.4f} | β: {coint_result.get('hedge_ratio', 0):.4f}")
+
+                if 'error' in coint_result:
+                    print(f"        Error: {coint_result['error']}")
+
+                if coint_result['cointegrated']:
+                    print(f"        ✓ Cointegrated (stable long-term relationship)")
+                else:
+                    print(f"        ✗ Not cointegrated (unstable relationship)")
+                print()
+
+            if coint_result['cointegrated']:
+                cointegrated_pairs.append((asset1, asset2, correlation, coint_result))
+
+        if verbose:
+            print(f"{'='*70}")
+            print(f"RESULTS: {len(cointegrated_pairs)}/{len(pairs)} pairs are cointegrated")
+            print(f"{'='*70}\n")
+
+        return cointegrated_pairs
+
+    def compare_correlation_vs_cointegration(
+        self,
+        pairs: List[Tuple[str, str, float]]
+    ) -> pd.DataFrame:
+        """
+        Compare correlation-based vs cointegration-based pair selection
+
+        Args:
+            pairs: List of (asset1, asset2, correlation) tuples
+
+        Returns:
+            DataFrame with comparison metrics for each pair
+        """
+        results = []
+
+        for asset1, asset2, correlation in pairs:
+            coint_result = self.test_cointegration(asset1, asset2)
+
+            results.append({
+                'pair': f"{asset1}-{asset2}",
+                'correlation': correlation,
+                'cointegrated': coint_result['cointegrated'],
+                'p_value': coint_result['p_value'],
+                'test_statistic': coint_result['test_statistic'],
+                'hedge_ratio': coint_result.get('hedge_ratio', 0.0),
+                'pass_coint': 'YES' if coint_result['cointegrated'] else 'NO'
+            })
+
+        df = pd.DataFrame(results)
+        return df.sort_values('p_value')
 
 
 if __name__ == "__main__":
