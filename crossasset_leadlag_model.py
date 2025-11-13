@@ -16,10 +16,13 @@ warnings.filterwarnings('ignore')
 @dataclass
 class ModelConfig:
     """Configuration for lead-lag model"""
+
     window: int = 60  # Rolling window for statistics
     z_entry: float = 2.0  # Z-score threshold for entry
     z_exit: float = 0.5  # Z-score threshold for exit
     lag_periods: int = 0  # Lead-lag offset (positive if leader leads)
+    beta_mode: str = "rolling"  # ``rolling`` keeps the raw OLS beta, ``ema`` smooths it
+    beta_span: int = 20  # Span for exponential smoothing when ``beta_mode`` == ``ema``
 
 
 class CrossAssetLeadLagModel:
@@ -105,6 +108,27 @@ class CrossAssetLeadLagModel:
         """
         spread = returns_leader - beta * returns_lagger
         return spread
+
+    def update_beta(
+        self,
+        raw_beta: float,
+        prev_beta: Optional[float] = None,
+    ) -> float:
+        """Update the hedge ratio according to the configured mode."""
+
+        mode = (self.config.beta_mode or "rolling").lower()
+
+        if not np.isfinite(raw_beta):
+            return prev_beta if prev_beta is not None and np.isfinite(prev_beta) else np.nan
+
+        if mode == "ema":
+            span = max(2, int(self.config.beta_span or 2))
+            alpha = 2.0 / (span + 1)
+
+            if prev_beta is not None and np.isfinite(prev_beta):
+                return prev_beta + alpha * (raw_beta - prev_beta)
+
+        return raw_beta
 
     def calculate_zscore(self, spread: np.ndarray) -> Tuple[float, float, float]:
         """
@@ -241,8 +265,8 @@ class CrossAssetLeadLagModel:
             print(f"⚠️  Warning: No common timestamps between {leader} and {lagger}")
             # Return empty DataFrame with expected structure
             empty_df = pd.DataFrame(columns=[
-                'r_leader', 'r_lagger', 'beta', 'spread',
-                'spread_mean', 'spread_std', 'zscore', 'signal'
+                'r_leader', 'r_lagger', 'beta_raw', 'beta', 'spread',
+                'spread_mean', 'spread_std', 'zscore', 'signal', 'raw_signal'
             ])
             empty_df.index.name = 'timestamp'
             return empty_df
@@ -256,60 +280,75 @@ class CrossAssetLeadLagModel:
             print(f"   Need at least {self.config.window} points, got {len(r_leader)}")
             # Return empty DataFrame
             empty_df = pd.DataFrame(columns=[
-                'r_leader', 'r_lagger', 'beta', 'spread',
-                'spread_mean', 'spread_std', 'zscore', 'signal'
+                'r_leader', 'r_lagger', 'beta_raw', 'beta', 'spread',
+                'spread_mean', 'spread_std', 'zscore', 'signal', 'raw_signal'
             ])
             empty_df.index.name = 'timestamp'
             return empty_df
 
         # Initialize results
         results = []
-        prev_signal = "FLAT"
+        prev_state = "FLAT"
+        prev_beta = np.nan
 
         # Rolling window calculation
         for i in range(len(r_leader)):
-            if i < self.config.window:
-                # Not enough data yet
+            if i < self.config.window - 1:
+                # Not enough data yet to form a full window
                 results.append({
                     'timestamp': r_leader.index[i],
                     'r_leader': r_leader.iloc[i],
                     'r_lagger': r_lagger.iloc[i],
+                    'beta_raw': np.nan,
                     'beta': np.nan,
                     'spread': np.nan,
                     'spread_mean': np.nan,
                     'spread_std': np.nan,
                     'zscore': np.nan,
-                    'signal': "HOLD"
+                    'signal': prev_state,
+                    'raw_signal': "HOLD"
                 })
                 continue
 
             # Get window data
-            window_leader = r_leader.iloc[i - self.config.window:i + 1].values
-            window_lagger = r_lagger.iloc[i - self.config.window:i + 1].values
+            start_idx = i - (self.config.window - 1)
+            window_leader = r_leader.iloc[start_idx:i + 1].values
+            window_lagger = r_lagger.iloc[start_idx:i + 1].values
 
             # Calculate beta
-            beta = self.calculate_beta(window_leader, window_lagger)
+            beta_raw = self.calculate_beta(window_leader, window_lagger)
+            beta = self.update_beta(beta_raw, prev_beta)
 
-            # Calculate spread
+            if np.isfinite(beta):
+                prev_beta = beta
+
+            # Calculate spread using the active hedge ratio
             spread = self.calculate_spread(window_leader, window_lagger, beta)
 
             # Calculate Z-score
             spread_mean, spread_std, zscore = self.calculate_zscore(spread)
 
             # Generate signal
-            signal = self.generate_signal(zscore, prev_signal)
-            prev_signal = signal
+            raw_signal = self.generate_signal(zscore, prev_state)
+            if raw_signal == "HOLD":
+                signal = prev_state
+            else:
+                signal = raw_signal
+
+            prev_state = signal
 
             results.append({
                 'timestamp': r_leader.index[i],
                 'r_leader': r_leader.iloc[i],
                 'r_lagger': r_lagger.iloc[i],
+                'beta_raw': beta_raw,
                 'beta': beta,
                 'spread': spread[-1] if np.isfinite(beta) else np.nan,
                 'spread_mean': spread_mean,
                 'spread_std': spread_std,
                 'zscore': zscore,
-                'signal': signal
+                'signal': signal,
+                'raw_signal': raw_signal
             })
 
         # Create DataFrame from results
@@ -319,8 +358,8 @@ class CrossAssetLeadLagModel:
         if df_signals.empty or len(df_signals) == 0:
             # Return empty DataFrame with expected structure
             empty_df = pd.DataFrame(columns=[
-                'r_leader', 'r_lagger', 'beta', 'spread',
-                'spread_mean', 'spread_std', 'zscore', 'signal'
+                'r_leader', 'r_lagger', 'beta_raw', 'beta', 'spread',
+                'spread_mean', 'spread_std', 'zscore', 'signal', 'raw_signal'
             ])
             empty_df.index.name = 'timestamp'
             return empty_df

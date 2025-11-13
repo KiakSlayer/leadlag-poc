@@ -21,6 +21,9 @@ Date: 2025
 import argparse
 import sys
 from datetime import datetime
+from typing import Iterable, List, Optional, Tuple
+
+import pandas as pd
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -30,6 +33,51 @@ from correlation_analyzer import CorrelationAnalyzer
 from crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
 from backtester import Backtester, BacktestConfig
 from visualizer import StrategyVisualizer
+
+
+DEFAULT_CRYPTO_SYMBOLS: List[str] = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
+DEFAULT_EQUITY_SYMBOLS = {
+    'SP500': '^GSPC',
+    'NASDAQ': '^IXIC',
+    'SET50': '^SET.BK'
+}
+
+
+def _normalise_crypto_universe(
+    raw_symbols: Iterable[str],
+) -> Tuple[List[str], List[str], bool]:
+    """Split user provided symbols into recognised crypto pairs and rejects."""
+
+    if not raw_symbols:
+        return DEFAULT_CRYPTO_SYMBOLS.copy(), [], False
+
+    accepted: List[str] = []
+    rejected: List[str] = []
+    fallback_used = False
+
+    seen = set()
+    for symbol in raw_symbols:
+        if not symbol:
+            continue
+
+        normalised = symbol.upper().strip()
+
+        # Basic heuristic for Binance-style symbols.
+        crypto_suffixes = ("USDT", "USDC", "BUSD", "BTC", "ETH")
+        is_crypto = normalised.endswith(crypto_suffixes)
+
+        if is_crypto:
+            if normalised not in seen:
+                accepted.append(normalised)
+                seen.add(normalised)
+        else:
+            rejected.append(symbol)
+
+    if not accepted:
+        fallback_used = True
+        accepted = DEFAULT_CRYPTO_SYMBOLS.copy()
+
+    return accepted, rejected, fallback_used
 
 
 def print_banner():
@@ -49,8 +97,8 @@ def print_banner():
 
 
 def run_full_analysis(
-    crypto_symbols=['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
-    equity_symbols={'SP500': '^GSPC', 'NASDAQ': '^IXIC', 'SET50': '^SET.BK'},
+    crypto_symbols=None,
+    equity_symbols=None,
     period='5d',
     interval='1m',
     window=60,
@@ -60,7 +108,10 @@ def run_full_analysis(
     max_lag=10,
     initial_capital=100000.0,
     transaction_cost=0.001,
-    save_plots=True
+    save_plots=True,
+    start_dt: Optional[pd.Timestamp] = None,
+    end_dt: Optional[pd.Timestamp] = None,
+    use_cache: bool = False,
 ):
     """
     Run complete cross-asset lead-lag analysis
@@ -79,21 +130,66 @@ def run_full_analysis(
         transaction_cost: Transaction cost per trade
         save_plots: Whether to save visualization plots
 
+        start_dt: Optional explicit start timestamp for range fetches
+        end_dt: Optional explicit end timestamp for range fetches
+        use_cache: Enable on-disk caching of historical downloads
+
     Returns:
         Dictionary with all results
     """
 
+    crypto_symbols = list(dict.fromkeys(crypto_symbols or DEFAULT_CRYPTO_SYMBOLS))
+    equity_symbols = (equity_symbols or DEFAULT_EQUITY_SYMBOLS).copy()
+
     print("\n📊 STEP 1: DATA COLLECTION")
     print("=" * 67)
 
-    # Fetch data
-    fetcher = DataFetcher()
-    data = fetcher.fetch_all_assets(
-        crypto_symbols=crypto_symbols,
-        equity_symbols=equity_symbols,
-        period=period,
-        interval=interval
-    )
+    fetcher = DataFetcher(use_cache=use_cache)
+    data = {}
+    range_mode = start_dt is not None and end_dt is not None
+
+    if range_mode:
+        display_end = end_dt - pd.Timedelta(microseconds=1)
+        print(
+            f"Using explicit range fetch from {start_dt} to {display_end} (inclusive) "
+            f"at interval {interval}."
+        )
+
+        print("\n📊 Fetching Crypto Data...")
+        for symbol in crypto_symbols:
+            df = fetcher.fetch_crypto_ohlcv_range(symbol, interval, start_dt, end_dt)
+            if df.empty:
+                print(f"  ✗ No data returned for {symbol} in requested range.")
+                continue
+            data[symbol] = df
+            print(
+                f"  • {symbol:15s}: {len(df):>7d} bars ({df.index.min()} → {df.index.max()})"
+            )
+
+        print("\n📈 Fetching Equity Index Data...")
+        for name, ticker in equity_symbols.items():
+            df = fetcher.fetch_equity_ohlcv_range(ticker, start_dt, end_dt, interval=interval)
+            if df.empty:
+                print(f"  ✗ No data returned for {name} ({ticker}) in requested range.")
+                continue
+            data[name] = df
+            print(
+                f"  • {name:15s}: {len(df):>7d} bars ({df.index.min()} → {df.index.max()})"
+            )
+    else:
+        data = fetcher.fetch_all_assets(
+            crypto_symbols=crypto_symbols,
+            equity_symbols=equity_symbols,
+            period=period,
+            interval=interval,
+        )
+
+        for asset_name, df in data.items():
+            if df.empty:
+                continue
+            print(
+                f"  • {asset_name:15s}: {len(df):>7d} bars ({df.index.min()} → {df.index.max()})"
+            )
 
     if len(data) == 0:
         print("✗ No data fetched. Exiting.")
@@ -131,46 +227,69 @@ def run_full_analysis(
     print(corr_matrix)
 
     # Find best pairs
-    crypto_assets = [col for col in prices.columns if 'USDT' in col or 'BTC' in col]
-    index_assets = [col for col in prices.columns if col not in crypto_assets]
+    crypto_assets = [col for col in prices.columns if col in crypto_symbols]
+    index_assets = [col for col in prices.columns if col in equity_symbols]
+
+    # Fallback heuristic for any remaining assets
+    remaining_assets = [
+        col for col in prices.columns
+        if col not in crypto_assets and col not in index_assets
+    ]
+    for asset in remaining_assets:
+        if asset.upper().endswith(("USDT", "USDC", "BUSD", "BTC", "ETH")):
+            crypto_assets.append(asset)
+        else:
+            index_assets.append(asset)
 
     print(f"\nCrypto Assets: {crypto_assets}")
     print(f"Index Assets: {index_assets}")
 
-    best_pairs = analyzer.find_best_pairs(
-        crypto_assets,
-        index_assets,
-        min_correlation=min_correlation
-    )
+    category_pairs = {
+        'Crypto-Index': analyzer.find_pairs(
+            crypto_assets,
+            index_assets,
+            min_correlation=min_correlation
+        ) if crypto_assets and index_assets else [],
+        'Crypto-Crypto': analyzer.find_pairs(
+            crypto_assets,
+            min_correlation=min_correlation
+        ) if len(crypto_assets) > 1 else [],
+        'Index-Index': analyzer.find_pairs(
+            index_assets,
+            min_correlation=min_correlation
+        ) if len(index_assets) > 1 else []
+    }
 
-    print(f"\n✓ Found {len(best_pairs)} crypto-index pairs with |corr| >= {min_correlation}")
+    category_analysis = {}
+    any_pairs_available = False
 
-    if len(best_pairs) == 0:
-        print("\n⚠️  No pairs found with sufficient correlation!")
+    for category, pairs in category_pairs.items():
+        print(f"\n{category} pairs (|corr| >= {min_correlation}):")
+        if not pairs:
+            print("  ⚠️  No qualifying pairs in this category.")
+            continue
+
+        any_pairs_available = True
+        for asset1, asset2, corr in pairs[:5]:
+            print(f"  {asset1:15s} <-> {asset2:15s}: {corr:+.4f}")
+
+        print(f"\n  Analyzing lead-lag relationships for {category} (max_lag={max_lag})...")
+        analysis = analyzer.analyze_all_pairs(pairs[:5], max_lag=max_lag)
+
+        if analysis.empty:
+            print("  ⚠️  No lead-lag relationship detected for this category.")
+        else:
+            print("  ✓ Lead-lag analysis complete:")
+            print(analysis.to_string(index=False))
+
+        category_analysis[category] = analysis
+
+    if not any_pairs_available:
+        print("\n⚠️  No asset pairs met the correlation threshold in any category.")
         print("\n💡 Suggestions:")
         print(f"   1. Lower the correlation threshold (current: {min_correlation})")
-        print("   2. Ensure you have overlapping data between crypto and indices")
-        print("   3. Try crypto-crypto pairs instead of crypto-index pairs")
-        print("\nExiting analysis...")
-        return None
-
-    print("\nTop Correlated Pairs:")
-    for crypto, index, corr in best_pairs[:5]:
-        print(f"  {crypto:15s} <-> {index:10s}: {corr:+.4f}")
-
-    # Lead-lag analysis
-    print(f"\nAnalyzing lead-lag relationships (max_lag={max_lag})...")
-    lead_lag_analysis = analyzer.analyze_all_pairs(best_pairs[:5], max_lag=max_lag)
-
-    print("\n✓ Lead-Lag Analysis Results:")
-    if len(lead_lag_analysis) > 0:
-        print(lead_lag_analysis.to_string(index=False))
-    else:
-        print("  (No results)")
-
-    if len(lead_lag_analysis) == 0:
-        print("\n⚠️  No pairs available for strategy execution.")
-        print("Exiting analysis...")
+        print("   2. Use a longer lookback period or coarser interval for more overlap")
+        print("   3. Ensure enough assets are requested for each category")
         return None
 
     # ----------------------------------------------------------------
@@ -189,36 +308,38 @@ def run_full_analysis(
     # Store results for all pairs
     all_results = {}
 
-    # Run strategy on top 3 pairs
-    for idx, row in lead_lag_analysis.head(3).iterrows():
+    # Run strategy for the top pair in each category
+    for category, analysis in category_analysis.items():
+        print(f"\n{'─' * 67}")
+        print(f"Category: {category}")
+        print(f"{'─' * 67}")
+
+        if analysis is None or analysis.empty:
+            print("  ⚠️  No valid lead-lag relationships to backtest in this category.")
+            continue
+
+        row = analysis.iloc[0]
         leader = row['leader']
         lagger = row['lagger']
         lag = int(row['lag_periods'])
         pair_name = f"{leader}-{lagger}"
 
-        print(f"\n{'─' * 67}")
         print(f"Pair: {pair_name}")
         print(f"Lead-Lag: {row['relationship']}")
         print(f"Correlation: {row['max_correlation']:.4f}")
-        print(f"{'─' * 67}")
 
-        # Run model
         print(f"\n  Running Z-score model...")
         signals = model.run_strategy(prices, leader, lagger, lag)
 
-        # Check if signals were generated
         if signals.empty or len(signals) == 0:
-            print(f"\n  ⚠️  No signals generated for this pair (insufficient data)")
-            print(f"  Skipping to next pair...\n")
+            print("  ⚠️  No signals generated for this pair (insufficient data).")
             continue
 
-        # Signal summary
         signal_counts = signals['signal'].value_counts()
         print(f"\n  Signal Distribution:")
         for sig, count in signal_counts.items():
             print(f"    {sig:25s}: {count:6d}")
 
-        # ----------------------------------------------------------------
         print(f"\n  Running backtest...")
         bt_config = BacktestConfig(
             initial_capital=initial_capital,
@@ -229,6 +350,10 @@ def run_full_analysis(
 
         backtest_results = backtester.run_backtest(signals, prices, leader, lagger)
         metrics = backtest_results['metrics']
+
+        if not metrics:
+            print("  ⚠️  Backtest did not produce metrics (check data sufficiency).")
+            continue
 
         print(f"\n  ✓ Backtest Results:")
         print(f"    {'─' * 60}")
@@ -241,14 +366,15 @@ def run_full_analysis(
         print(f"    {'Final Capital:':<30} ${metrics.get('final_capital', 0):>10,.2f}")
         print(f"    {'─' * 60}")
 
-        # Store results
         all_results[pair_name] = {
             'leader': leader,
             'lagger': lagger,
             'lag': lag,
             'signals': signals,
             'backtest': backtest_results,
-            'metrics': metrics
+            'metrics': metrics,
+            'category': category,
+            'lead_lag_row': row
         }
 
     # Check if any results were generated
@@ -259,7 +385,7 @@ def run_full_analysis(
         print("   1. Use a longer time period (--period 7d or --period 1mo)")
         print("   2. Use a larger interval (--interval 5m or --interval 15m)")
         print("   3. Reduce the window size (--window 30)")
-        print("   4. Try crypto-crypto pairs instead")
+        print("   4. Lower the correlation threshold (--min-corr 0.1)")
         return None
 
     # ----------------------------------------------------------------
@@ -269,7 +395,8 @@ def run_full_analysis(
     visualizer = StrategyVisualizer()
 
     for pair_name, result in all_results.items():
-        print(f"\nGenerating report for {pair_name}...")
+        category = result.get('category', 'N/A')
+        print(f"\nGenerating report for {pair_name} ({category})...")
 
         save_path = f"report_{pair_name.replace('-', '_')}.png" if save_plots else None
 
@@ -295,12 +422,13 @@ def run_full_analysis(
     # Summary table
     print("\n📋 SUMMARY TABLE:")
     print("=" * 67)
-    print(f"{'Pair':<25} {'Return %':>10} {'Sharpe':>8} {'MaxDD %':>10} {'Trades':>8}")
+    print(f"{'Category':<15} {'Pair':<25} {'Return %':>10} {'Sharpe':>8} {'MaxDD %':>10} {'Trades':>8}")
     print("─" * 67)
 
     for pair_name, result in all_results.items():
         m = result['metrics']
-        print(f"{pair_name:<25} {m.get('total_return_pct', 0):>10.2f} "
+        category = result.get('category', 'N/A')
+        print(f"{category:<15} {pair_name:<25} {m.get('total_return_pct', 0):>10.2f} "
               f"{m.get('sharpe_ratio', 0):>8.2f} {m.get('max_drawdown_pct', 0):>10.2f} "
               f"{m.get('num_trades', 0):>8d}")
 
@@ -309,7 +437,8 @@ def run_full_analysis(
     return {
         'prices': prices,
         'correlations': corr_matrix,
-        'lead_lag_analysis': lead_lag_analysis,
+        'pair_candidates': category_pairs,
+        'lead_lag_analysis': category_analysis,
         'results': all_results
     }
 
@@ -323,12 +452,18 @@ def main():
     )
 
     # Data arguments
-    parser.add_argument('--crypto', nargs='+', default=['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
-                       help='Crypto symbols')
+    parser.add_argument('--crypto', nargs='+',
+                       help='Crypto symbols (e.g. BTCUSDT ETHUSDT)')
     parser.add_argument('--period', type=str, default='5d',
                        help='Data period (1d, 5d, 1mo, etc.)')
     parser.add_argument('--interval', type=str, default='1m',
                        help='Data interval (1m, 5m, 1h, etc.)')
+    parser.add_argument('--start', type=str,
+                        help='Start date (YYYY-MM-DD or ISO8601) for explicit range fetches')
+    parser.add_argument('--end', type=str,
+                        help='End date (YYYY-MM-DD or ISO8601) for explicit range fetches')
+    parser.add_argument('--use-cache', action='store_true',
+                        help='Enable local parquet caching for long-range fetches')
 
     # Model arguments
     parser.add_argument('--window', type=int, default=60,
@@ -356,10 +491,37 @@ def main():
 
     print_banner()
 
+    if (args.start and not args.end) or (args.end and not args.start):
+        parser.error('Both --start and --end must be provided together when requesting a range.')
+
+    start_dt: Optional[pd.Timestamp] = None
+    end_dt: Optional[pd.Timestamp] = None
+
     try:
+        if args.start and args.end:
+            try:
+                start_dt = pd.to_datetime(args.start)
+                end_dt = pd.to_datetime(args.end)
+            except ValueError as exc:
+                parser.error(f'Invalid date supplied: {exc}')
+
+            if start_dt >= end_dt:
+                parser.error('--start must be strictly before --end.')
+
+            # Treat --end as inclusive by extending to the start of the next day
+            end_dt = end_dt + pd.Timedelta(days=1)
+
+        crypto_symbols, rejected, fallback_used = _normalise_crypto_universe(args.crypto)
+        if rejected:
+            print("\n⚠️  Ignored non-crypto symbols from --crypto:")
+            for sym in rejected:
+                print(f"   - {sym}")
+        if fallback_used and args.crypto:
+            print("\n⚠️  No valid crypto pairs provided; reverting to default universe.")
+
         results = run_full_analysis(
-            crypto_symbols=args.crypto,
-            equity_symbols={'SP500': '^GSPC', 'NASDAQ': '^IXIC', 'SET50': '^SET.BK'},
+            crypto_symbols=crypto_symbols,
+            equity_symbols=DEFAULT_EQUITY_SYMBOLS.copy(),
             period=args.period,
             interval=args.interval,
             window=args.window,
@@ -369,7 +531,10 @@ def main():
             max_lag=args.max_lag,
             initial_capital=args.capital,
             transaction_cost=args.cost,
-            save_plots=not args.no_save
+            save_plots=not args.no_save,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            use_cache=args.use_cache,
         )
 
         if results is None:

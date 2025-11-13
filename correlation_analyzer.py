@@ -6,8 +6,10 @@ Computes correlations and lead-lag relationships between asset pairs
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from itertools import combinations, product
+from typing import Dict, List, Tuple, Optional, Sequence
 from scipy.stats import pearsonr
+from statsmodels.tsa.stattools import coint
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -53,6 +55,130 @@ class CorrelationAnalyzer:
 
         return corr
 
+    def find_pairs(
+        self,
+        assets_a: List[str],
+        assets_b: Optional[List[str]] = None,
+        min_correlation: float = 0.3
+    ) -> List[Tuple[str, str, float]]:
+        """
+        Find pairs of assets with significant correlations.
+
+        Args:
+            assets_a: List of asset names for the first leg
+            assets_b: Optional list of asset names for the second leg. When
+                omitted, all unique combinations within ``assets_a`` are
+                evaluated.
+            min_correlation: Minimum absolute correlation threshold
+
+        Returns:
+            List of (asset1, asset2, correlation) tuples sorted by absolute
+            correlation strength.
+        """
+        corr_matrix = self.calculate_correlation_matrix()
+        pairs: List[Tuple[str, str, float]] = []
+
+        if assets_b is None:
+            combos = combinations(assets_a, 2)
+        else:
+            combos = product(assets_a, assets_b)
+
+        for asset1, asset2 in combos:
+            if asset1 == asset2:
+                continue
+            if asset1 not in corr_matrix.columns or asset2 not in corr_matrix.columns:
+                continue
+
+            corr_value = corr_matrix.loc[asset1, asset2]
+
+            if pd.isna(corr_value):
+                continue
+
+            if abs(corr_value) >= min_correlation:
+                pairs.append((asset1, asset2, corr_value))
+
+        pairs.sort(key=lambda x: abs(x[2]), reverse=True)
+        return pairs
+
+    def filter_cointegrated_pairs(
+        self,
+        pairs: Sequence[Tuple[str, str, float]],
+        significance_level: float = 0.05,
+        max_lag: Optional[int] = None,
+        autolag: str = "aic",
+        min_samples: int = 60,
+    ) -> pd.DataFrame:
+        """Filter candidate pairs using the Engle-Granger cointegration test.
+
+        Args:
+            pairs: Iterable of (asset1, asset2, correlation) tuples.
+            significance_level: Maximum p-value threshold to accept a pair.
+            max_lag: Optional maximum lag parameter forwarded to ``statsmodels``.
+            autolag: Information criterion for lag selection.
+            min_samples: Minimum number of overlapping observations required to
+                evaluate cointegration.
+
+        Returns:
+            DataFrame with the surviving pairs sorted by p-value and
+            correlation strength. The columns include ``asset1``, ``asset2``,
+            ``correlation``, ``p_value`` and the Engle-Granger test statistic.
+        """
+
+        qualified_pairs: List[Dict[str, float]] = []
+
+        for asset1, asset2, corr_value in pairs:
+            if asset1 not in self.prices.columns or asset2 not in self.prices.columns:
+                continue
+
+            pair_prices = self.prices[[asset1, asset2]].dropna()
+
+            if len(pair_prices) < min_samples:
+                continue
+
+            series1 = np.log(pair_prices[asset1].astype(float))
+            series2 = np.log(pair_prices[asset2].astype(float))
+
+            try:
+                stat, p_value, crit_values = coint(
+                    series1,
+                    series2,
+                    trend="c",
+                    maxlag=max_lag,
+                    autolag=autolag,
+                )
+            except Exception:
+                continue
+
+            if not np.isfinite(p_value):
+                continue
+
+            if p_value < significance_level:
+                qualified_pairs.append(
+                    {
+                        "asset1": asset1,
+                        "asset2": asset2,
+                        "correlation": corr_value,
+                        "p_value": float(p_value),
+                        "test_stat": float(stat),
+                        "crit_value_5pct": float(crit_values[1]) if len(crit_values) > 1 else np.nan,
+                    }
+                )
+
+        if not qualified_pairs:
+            return pd.DataFrame(
+                columns=[
+                    "asset1",
+                    "asset2",
+                    "correlation",
+                    "p_value",
+                    "test_stat",
+                    "crit_value_5pct",
+                ]
+            )
+
+        df_pairs = pd.DataFrame(qualified_pairs)
+        return df_pairs.sort_values(["p_value", "correlation"], ascending=[True, False])
+
     def find_best_pairs(
         self,
         crypto_assets: List[str],
@@ -70,25 +196,7 @@ class CorrelationAnalyzer:
         Returns:
             List of (crypto, index, correlation) tuples, sorted by |correlation|
         """
-        corr_matrix = self.calculate_correlation_matrix()
-        pairs = []
-
-        for crypto in crypto_assets:
-            if crypto not in corr_matrix.columns:
-                continue
-            for index in index_assets:
-                if index not in corr_matrix.columns:
-                    continue
-
-                corr_value = corr_matrix.loc[crypto, index]
-
-                if abs(corr_value) >= min_correlation:
-                    pairs.append((crypto, index, corr_value))
-
-        # Sort by absolute correlation (strongest first)
-        pairs.sort(key=lambda x: abs(x[2]), reverse=True)
-
-        return pairs
+        return self.find_pairs(crypto_assets, index_assets, min_correlation)
 
     def detect_lead_lag(
         self,
@@ -117,44 +225,29 @@ class CorrelationAnalyzer:
         returns1 = returns1.loc[common_idx]
         returns2 = returns2.loc[common_idx]
 
-        correlations = []
-        lags = range(-max_lag, max_lag + 1)
+        best_lag = 0
+        best_corr = 0.0
 
-        for lag in lags:
-            if lag < 0:
-                # asset2 leads asset1
-                r1 = returns1.iloc[-lag:]
-                r2 = returns2.iloc[:lag]
-            elif lag > 0:
-                # asset1 leads asset2
-                r1 = returns1.iloc[:-lag]
-                r2 = returns2.iloc[lag:]
-            else:
-                r1 = returns1
-                r2 = returns2
+        for lag in range(-max_lag, max_lag + 1):
+            shifted_returns2 = returns2.shift(-lag)
+            aligned = pd.concat([returns1, shifted_returns2], axis=1, join="inner").dropna()
 
-            # Align indices
-            common = r1.index.intersection(r2.index)
-            if len(common) < 10:  # Need minimum data points
-                correlations.append(0.0)
+            if len(aligned) < 10:
                 continue
 
-            r1_aligned = r1.loc[common]
-            r2_aligned = r2.loc[common]
-
             try:
-                corr, _ = pearsonr(r1_aligned, r2_aligned)
-                correlations.append(corr if np.isfinite(corr) else 0.0)
-            except:
-                correlations.append(0.0)
+                corr, _ = pearsonr(aligned.iloc[:, 0], aligned.iloc[:, 1])
+            except Exception:
+                corr = np.nan
 
-        # Find lag with maximum absolute correlation
-        abs_corrs = [abs(c) for c in correlations]
-        max_idx = np.argmax(abs_corrs)
-        optimal_lag = lags[max_idx]
-        max_correlation = correlations[max_idx]
+            if not np.isfinite(corr):
+                continue
 
-        return optimal_lag, max_correlation
+            if abs(corr) > abs(best_corr):
+                best_corr = corr
+                best_lag = lag
+
+        return best_lag, best_corr
 
     def analyze_all_pairs(
         self,

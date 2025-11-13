@@ -1,27 +1,74 @@
-"""
-Data Fetcher Module for Cross-Asset Lead-Lag System
-====================================================
-Fetches 1-minute OHLCV data from multiple sources:
-- Crypto: Binance API (BTCUSDT, ETHUSDT, SOLUSDT)
-- Equity Indices: Yahoo Finance (S&P500, NASDAQ)
-- SET50: Yahoo Finance fallback (^SET.BK)
-"""
+"""Utilities for collecting market data used throughout the lead-lag workflow."""
 
-import requests
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from __future__ import annotations
+
 import time
+from typing import Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+import requests
 import yfinance as yf
+
+from data_cache import DataCache
 
 
 class DataFetcher:
-    """Unified data fetcher for crypto and equity indices"""
+    """Unified data fetcher for crypto and equity indices."""
 
-    def __init__(self):
+    def __init__(self, use_cache: bool = False, cache_root: str = "cache") -> None:
         self.binance_base = "https://api.binance.com"
-        self.cache = {}
+        self._cache: Optional[DataCache] = DataCache(cache_root) if use_cache else None
+
+    @staticmethod
+    def _ensure_utc(ts: pd.Timestamp) -> pd.Timestamp:
+        """Return the timestamp as UTC-normalised (tz-aware) value."""
+
+        ts = pd.Timestamp(ts)
+        if ts.tzinfo is None:
+            return ts.tz_localize("UTC")
+        return ts.tz_convert("UTC")
+
+    @staticmethod
+    def _interval_to_millis(interval: str) -> int:
+        """Convert a Binance interval string to milliseconds."""
+
+        delta = pd.to_timedelta(interval)
+        return int(delta.total_seconds() * 1000)
+
+    @staticmethod
+    def _parse_crypto_klines(raw_klines: List[List]) -> pd.DataFrame:
+        """Convert raw Binance klines payload to a typed OHLCV DataFrame."""
+
+        if not raw_klines:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        frame = pd.DataFrame(
+            raw_klines,
+            columns=[
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "close_time",
+                "quote_volume",
+                "trades",
+                "taker_buy_base",
+                "taker_buy_quote",
+                "ignore",
+            ],
+        )
+
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], unit="ms", utc=True)
+        for column in ["open", "high", "low", "close", "volume"]:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+
+        frame = frame.set_index("timestamp")[ ["open", "high", "low", "close", "volume"] ]
+        frame.index = frame.index.tz_localize(None)
+        frame = frame[~frame.index.duplicated(keep="first")]  # de-duplicate
+        return frame.sort_index()
 
     def fetch_crypto_ohlcv(
         self,
@@ -29,7 +76,7 @@ class DataFetcher:
         interval: str = "1m",
         limit: int = 1000,
         start_time: Optional[int] = None,
-        end_time: Optional[int] = None
+        end_time: Optional[int] = None,
     ) -> pd.DataFrame:
         """
         Fetch crypto OHLCV data from Binance
@@ -51,30 +98,17 @@ class DataFetcher:
             "limit": limit
         }
 
-        if start_time:
+        if start_time is not None:
             params["startTime"] = start_time
-        if end_time:
+        if end_time is not None:
             params["endTime"] = end_time
 
         try:
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
-            data = response.json()
+            raw = response.json()
 
-            df = pd.DataFrame(data, columns=[
-                'timestamp', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_volume', 'trades',
-                'taker_buy_base', 'taker_buy_quote', 'ignore'
-            ])
-
-            # Convert types
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-            # Keep only essential columns
-            df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-            df.set_index('timestamp', inplace=True)
+            df = self._parse_crypto_klines(raw)
 
             print(f"✓ Fetched {len(df)} {interval} bars for {symbol}")
             return df
@@ -87,7 +121,9 @@ class DataFetcher:
         self,
         symbol: str,
         period: str = "7d",
-        interval: str = "1m"
+        interval: str = "1m",
+        start: Optional[pd.Timestamp] = None,
+        end: Optional[pd.Timestamp] = None,
     ) -> pd.DataFrame:
         """
         Fetch equity/index data from Yahoo Finance
@@ -104,8 +140,27 @@ class DataFetcher:
             Yahoo Finance 1m data is limited to last 7 days
         """
         try:
+            interval_to_use = interval
+
+            if interval == "1m":
+                if start is not None and end is not None:
+                    span = pd.Timestamp(end) - pd.Timestamp(start)
+                    if span > pd.Timedelta(days=7):
+                        print(
+                            "⚠️  1m interval exceeds Yahoo Finance 7-day limit; falling back to 5m."
+                        )
+                        interval_to_use = "5m"
+                elif period not in {"1d", "5d", "7d"}:
+                    print(
+                        "⚠️  1m interval only supports up to 7 days; falling back to 5m."
+                    )
+                    interval_to_use = "5m"
+
             ticker = yf.Ticker(symbol)
-            df = ticker.history(period=period, interval=interval)
+            if start is not None or end is not None:
+                df = ticker.history(start=start, end=end, interval=interval_to_use)
+            else:
+                df = ticker.history(period=period, interval=interval_to_use)
 
             if df.empty:
                 print(f"✗ No data returned for {symbol}")
@@ -117,35 +172,33 @@ class DataFetcher:
             # Standardize column names to lowercase
             df.columns = df.columns.str.lower()
 
-            # The datetime column could be named 'date', 'datetime', or 'index'
-            # Find it and rename to 'timestamp'
             datetime_col = None
             for col in df.columns:
-                if col in ['date', 'datetime', 'index']:
+                if col in ["date", "datetime", "index"]:
                     datetime_col = col
                     break
 
             if datetime_col:
-                df = df.rename(columns={datetime_col: 'timestamp'})
-            elif 'timestamp' not in df.columns:
-                # If still no timestamp column found, assume first column is datetime
-                df = df.rename(columns={df.columns[0]: 'timestamp'})
+                df = df.rename(columns={datetime_col: "timestamp"})
+            elif "timestamp" not in df.columns:
+                df = df.rename(columns={df.columns[0]: "timestamp"})
 
-            # Ensure timestamp is datetime type
-            if 'timestamp' in df.columns:
-                if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df.set_index('timestamp', inplace=True)
+            if "timestamp" in df.columns:
+                if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+                else:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+                df.set_index("timestamp", inplace=True)
             else:
                 print(f"✗ Could not identify timestamp column for {symbol}")
                 return pd.DataFrame()
 
-            # Keep only essential columns
-            cols_to_keep = ['open', 'high', 'low', 'close', 'volume']
+            cols_to_keep = ["open", "high", "low", "close", "volume"]
             df = df[[col for col in cols_to_keep if col in df.columns]]
+            df.index = df.index.tz_localize(None)
 
-            print(f"✓ Fetched {len(df)} {interval} bars for {symbol}")
-            return df
+            print(f"✓ Fetched {len(df)} {interval_to_use} bars for {symbol}")
+            return df.sort_index()
 
         except Exception as e:
             print(f"✗ Error fetching {symbol} from Yahoo Finance: {e}")
@@ -154,7 +207,9 @@ class DataFetcher:
     def fetch_set50_ohlcv(
         self,
         period: str = "7d",
-        interval: str = "1m"
+        interval: str = "1m",
+        start: Optional[pd.Timestamp] = None,
+        end: Optional[pd.Timestamp] = None,
     ) -> pd.DataFrame:
         """
         Fetch SET50 index data (Thailand)
@@ -170,7 +225,163 @@ class DataFetcher:
         # SET50 ticker on Yahoo Finance
         # ^SET.BK is SET Index, SET50 might not have 1m data
         # Using SET Index as proxy
-        return self.fetch_equity_ohlcv("^SET.BK", period=period, interval=interval)
+        return self.fetch_equity_ohlcv("^SET.BK", period=period, interval=interval, start=start, end=end)
+
+    def fetch_crypto_ohlcv_range(
+        self,
+        symbol: str,
+        interval: str,
+        start_dt: pd.Timestamp,
+        end_dt: pd.Timestamp,
+        limit_per_call: int = 1000,
+        sleep_sec: float = 0.2,
+    ) -> pd.DataFrame:
+        """Fetch a long-range slice of Binance OHLCV data via pagination."""
+
+        start_utc = self._ensure_utc(start_dt)
+        end_utc = self._ensure_utc(end_dt)
+
+        if start_utc >= end_utc:
+            print("✗ Invalid date range supplied for crypto fetch.")
+            return pd.DataFrame()
+
+        cache_key = {
+            "source": "binance",
+            "symbol": symbol,
+            "interval": interval,
+            "start": start_utc.isoformat(),
+            "end": end_utc.isoformat(),
+        }
+
+        if self._cache is not None:
+            cached = self._cache.load(**cache_key)
+            if cached is not None and not cached.empty:
+                print(
+                    f"✓ Cache hit for {symbol} ({interval}) covering {len(cached)} bars"
+                )
+                return cached
+
+        start_ms = int(start_utc.value // 1_000_000)
+        end_ms = int(end_utc.value // 1_000_000)
+        step_ms = self._interval_to_millis(interval)
+        limit_span = step_ms * limit_per_call
+
+        url = f"{self.binance_base}/api/v3/klines"
+        frames: List[pd.DataFrame] = []
+        current_start = start_ms
+
+        while current_start <= end_ms:
+            params = {
+                "symbol": symbol,
+                "interval": interval,
+                "limit": limit_per_call,
+                "startTime": current_start,
+                "endTime": min(current_start + limit_span - 1, end_ms),
+            }
+
+            attempt = 0
+            backoff = sleep_sec
+            while attempt < 5:
+                try:
+                    response = requests.get(url, params=params, timeout=10)
+                    response.raise_for_status()
+                    raw = response.json()
+                    break
+                except requests.RequestException as exc:
+                    attempt += 1
+                    print(
+                        f"✗ Binance request error for {symbol} (attempt {attempt}/5): {exc}"
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2
+            else:
+                print("✗ Exhausted retries while fetching Binance history.")
+                break
+
+            if not raw:
+                break
+
+            frame = self._parse_crypto_klines(raw)
+            if frame.empty:
+                break
+
+            frames.append(frame)
+
+            last_close_ms = int(raw[-1][6])
+            current_start = last_close_ms + 1
+
+            if current_start > end_ms:
+                break
+
+            time.sleep(sleep_sec)
+
+        if not frames:
+            print("✗ No data returned during Binance pagination.")
+            return pd.DataFrame()
+
+        full_df = pd.concat(frames).sort_index()
+        start_naive = start_utc.tz_localize(None)
+        end_naive = end_utc.tz_localize(None)
+        full_df = full_df.loc[(full_df.index >= start_naive) & (full_df.index <= end_naive)]
+        full_df = full_df[~full_df.index.duplicated(keep="first")]
+
+        print(
+            f"✓ Fetched {len(full_df)} {interval} bars for {symbol} "
+            f"between {full_df.index.min()} and {full_df.index.max()}"
+        )
+
+        if self._cache is not None and not full_df.empty:
+            self._cache.save(full_df, **cache_key)
+
+        return full_df
+
+    def fetch_equity_ohlcv_range(
+        self,
+        symbol: str,
+        start_dt: pd.Timestamp,
+        end_dt: pd.Timestamp,
+        interval: str = "5m",
+    ) -> pd.DataFrame:
+        """Fetch Yahoo Finance OHLCV over an explicit date range."""
+
+        start_utc = self._ensure_utc(start_dt)
+        end_utc = self._ensure_utc(end_dt)
+
+        if start_utc >= end_utc:
+            print("✗ Invalid date range supplied for equity fetch.")
+            return pd.DataFrame()
+
+        cache_key = {
+            "source": "yfinance",
+            "symbol": symbol,
+            "interval": interval,
+            "start": start_utc.isoformat(),
+            "end": end_utc.isoformat(),
+        }
+
+        if self._cache is not None:
+            cached = self._cache.load(**cache_key)
+            if cached is not None and not cached.empty:
+                print(
+                    f"✓ Cache hit for {symbol} ({interval}) covering {len(cached)} bars"
+                )
+                return cached
+
+        start_ts = start_utc.tz_localize(None)
+        end_ts = end_utc.tz_localize(None)
+
+        df = self.fetch_equity_ohlcv(
+            symbol,
+            period="7d",
+            interval=interval,
+            start=start_ts,
+            end=end_ts,
+        )
+
+        if self._cache is not None and not df.empty:
+            self._cache.save(df, **cache_key)
+
+        return df
 
     def fetch_all_assets(
         self,
@@ -289,8 +500,9 @@ class DataFetcher:
             aligned_df = df.reindex(common_index, method='ffill', limit=5)
 
             # Drop rows with too many NaN values (more than 50% of columns)
-            threshold = len(aligned_df.columns) * 0.5
-            aligned_df = aligned_df.dropna(thresh=threshold)
+            min_non_na = int(np.ceil(len(aligned_df.columns) * 0.5)) if len(aligned_df.columns) else 0
+            if min_non_na > 0:
+                aligned_df = aligned_df.dropna(thresh=min_non_na)
 
             aligned_data[name] = aligned_df
 
