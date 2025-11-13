@@ -3,7 +3,7 @@ Test script for empty signals and insufficient data handling
 """
 import pandas as pd
 import numpy as np
-from crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
+from core.crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
 
 print("=" * 70)
 print("Testing Empty Signals and Insufficient Data Handling")

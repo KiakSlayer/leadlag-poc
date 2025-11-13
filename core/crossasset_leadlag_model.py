@@ -472,8 +472,8 @@ class CrossAssetLeadLagModel:
 
 if __name__ == "__main__":
     # Test the model
-    from data_fetcher import DataFetcher
-    from correlation_analyzer import CorrelationAnalyzer
+    from core.data_fetcher import DataFetcher
+    from core.correlation_analyzer import CorrelationAnalyzer
 
     print("=" * 60)
     print("Testing Cross-Asset Lead-Lag Model")

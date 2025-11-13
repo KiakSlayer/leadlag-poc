@@ -303,7 +303,7 @@ After identifying optimal parameters:
 
 The tuning system integrates seamlessly with:
 - `main_crossasset_poc.py` - Use recommended params
-- `backtester.py` - Leverage same backtest engine
+- `core/backtester.py` - Leverage same backtest engine
 - Monitoring systems - Track drift from tuned performance
 
 ## 📞 Support

@@ -26,11 +26,11 @@ This system implements a quantitative trading strategy that:
 
 ```
 leadlag-poc/
-├── data_fetcher.py              # Multi-source data collection
-├── correlation_analyzer.py       # Correlation & lead-lag detection
-├── crossasset_leadlag_model.py  # Z-score trading model
-├── backtester.py                # Performance simulation
-├── visualizer.py                # Plotting & reporting
+├── core/data_fetcher.py              # Multi-source data collection
+├── core/correlation_analyzer.py       # Correlation & lead-lag detection
+├── core/crossasset_leadlag_model.py  # Z-score trading model
+├── core/backtester.py                # Performance simulation
+├── core/visualizer.py                # Plotting & reporting
 ├── main_crossasset_poc.py       # Main orchestration script
 ├── requirements.txt             # Python dependencies
 ├── docker-compose.yml           # Kafka infrastructure (for streaming)
@@ -118,7 +118,7 @@ python main_crossasset_poc.py --interval 5m --period 1mo
 
 ## 📊 Module Documentation
 
-### 1. `data_fetcher.py`
+### 1. `core/data_fetcher.py`
 
 Collects OHLCV data from multiple sources.
 
@@ -148,7 +148,7 @@ aligned = fetcher.align_timestamps(data, method='inner')
 prices = fetcher.get_close_prices(aligned)
 ```
 
-### 2. `correlation_analyzer.py`
+### 2. `core/correlation_analyzer.py`
 
 Analyzes correlations and lead-lag relationships.
 
@@ -176,7 +176,7 @@ lag, max_corr = analyzer.detect_lead_lag('BTCUSDT', 'SP500', max_lag=10)
 analysis = analyzer.analyze_all_pairs(pairs, max_lag=10)
 ```
 
-### 3. `crossasset_leadlag_model.py`
+### 3. `core/crossasset_leadlag_model.py`
 
 Implements Z-score trading strategy.
 
@@ -209,7 +209,7 @@ signals = model.run_strategy(
 - `|Z| < 0.5` → FLAT (close positions)
 - Otherwise → HOLD
 
-### 4. `backtester.py`
+### 4. `core/backtester.py`
 
 Simulates trading and calculates performance.
 
@@ -249,7 +249,7 @@ trades = results['trades']
 metrics = results['metrics']
 ```
 
-### 5. `visualizer.py`
+### 5. `core/visualizer.py`
 
 Creates comprehensive visualizations.
 
@@ -360,19 +360,19 @@ Each module includes a test section that runs when executed directly:
 
 ```bash
 # Test data fetcher
-python data_fetcher.py
+python core/data_fetcher.py
 
 # Test correlation analyzer
-python correlation_analyzer.py
+python core/correlation_analyzer.py
 
 # Test model
-python crossasset_leadlag_model.py
+python core/crossasset_leadlag_model.py
 
 # Test backtester
-python backtester.py
+python core/backtester.py
 
 # Test visualizer
-python visualizer.py
+python core/visualizer.py
 ```
 
 ## 🔄 Future Enhancements

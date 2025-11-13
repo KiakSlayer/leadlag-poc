@@ -19,18 +19,21 @@ Date: 2025
 """
 
 import argparse
+import os
 import sys
 from datetime import datetime
 from typing import Iterable, List, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
+import pandas as pd
+
 # Import all modules
-from data_fetcher import DataFetcher
-from correlation_analyzer import CorrelationAnalyzer
-from crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
-from backtester import Backtester, BacktestConfig
-from visualizer import StrategyVisualizer
+from core.data_fetcher import DataFetcher
+from core.correlation_analyzer import CorrelationAnalyzer
+from core.crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
+from core.backtester import Backtester, BacktestConfig
+from core.visualizer import StrategyVisualizer
 
 
 DEFAULT_CRYPTO_SYMBOLS: List[str] = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
@@ -245,9 +248,34 @@ def run_full_analysis(
         print("   3. Ensure enough assets are requested for each category")
         return None
 
+    bucket_keys = [
+        ('crypto-crypto', 'direct'),
+        ('crypto-crypto', 'inverse'),
+        ('crypto-index', 'direct'),
+        ('crypto-index', 'inverse'),
+        ('index-index', 'direct'),
+        ('index-index', 'inverse'),
+    ]
+
+    bucket_pairs = {key: [] for key in bucket_keys}
+
+    for analysis in category_analysis.values():
+        if analysis is None or analysis.empty:
+            continue
+        for _, row in analysis.iterrows():
+            group = row.get('group')
+            direction = row.get('direction')
+            if not group or not direction:
+                continue
+            key = (str(group), str(direction))
+            if key in bucket_pairs:
+                bucket_pairs[key].append(row.to_dict())
+
     # ----------------------------------------------------------------
     print("\n\n📈 STEP 3: STRATEGY EXECUTION")
     print("=" * 67)
+
+    os.makedirs('reports', exist_ok=True)
 
     # Prepare model config
     config = ModelConfig(
@@ -260,75 +288,149 @@ def run_full_analysis(
 
     # Store results for all pairs
     all_results = {}
+    bucket_summaries = []
 
-    # Run strategy for the top pair in each category
-    for category, analysis in category_analysis.items():
+    def _format_metric(value, precision=2):
+        if pd.isna(value):
+            return 'n/a'
+        return f"{value:.{precision}f}"
+
+    for (group, direction), rows in bucket_pairs.items():
+        bucket_label = f"{group} | {direction}"
         print(f"\n{'─' * 67}")
-        print(f"Category: {category}")
+        print(f"Bucket: {bucket_label}")
         print(f"{'─' * 67}")
 
-        if analysis is None or analysis.empty:
-            print("  ⚠️  No valid lead-lag relationships to backtest in this category.")
+        if not rows:
+            print("  ⚠️  No qualifying pairs for this bucket.")
+            bucket_summaries.append({
+                'group': group,
+                'direction': direction,
+                'pair_count': 0,
+                'sharpe_mean': float('nan'),
+                'max_drawdown_median': float('nan'),
+                'num_trades_mean': float('nan'),
+                'win_rate_mean': float('nan')
+            })
             continue
 
-        row = analysis.iloc[0]
-        leader = row['leader']
-        lagger = row['lagger']
-        lag = int(row['lag_periods'])
-        pair_name = f"{leader}-{lagger}"
+        bucket_records = []
 
-        print(f"Pair: {pair_name}")
-        print(f"Lead-Lag: {row['relationship']}")
-        print(f"Correlation: {row['max_correlation']:.4f}")
+        for row in rows:
+            leader = row['leader']
+            lagger = row['lagger']
+            lag = int(row.get('lag_periods', 0))
+            pair_name = row.get('pair') or f"{leader}-{lagger}"
 
-        print(f"\n  Running Z-score model...")
-        signals = model.run_strategy(prices, leader, lagger, lag)
+            print(f"Pair: {pair_name}")
+            print(f"Lead-Lag: {row.get('relationship', 'N/A')}")
+            print(f"Correlation: {row.get('max_correlation', 0):.4f}")
 
-        if signals.empty or len(signals) == 0:
-            print("  ⚠️  No signals generated for this pair (insufficient data).")
+            print(f"\n  Running Z-score model...")
+            signals = model.run_strategy(prices, leader, lagger, lag)
+
+            if signals.empty or len(signals) == 0:
+                print("  ⚠️  No signals generated for this pair (insufficient data).")
+                continue
+
+            signal_counts = signals['signal'].value_counts()
+            print(f"\n  Signal Distribution:")
+            for sig, count in signal_counts.items():
+                print(f"    {sig:25s}: {count:6d}")
+
+            print(f"\n  Running backtest...")
+            bt_config = BacktestConfig(
+                initial_capital=initial_capital,
+                transaction_cost=transaction_cost,
+                position_size=1.0
+            )
+            backtester = Backtester(bt_config)
+
+            backtest_results = backtester.run_backtest(signals, prices, leader, lagger)
+            metrics = backtest_results['metrics']
+
+            if not metrics:
+                print("  ⚠️  Backtest did not produce metrics (check data sufficiency).")
+                continue
+
+            print(f"\n  ✓ Backtest Results:")
+            print(f"    {'─' * 60}")
+            print(f"    {'Total Return:':<30} {metrics.get('total_return_pct', 0):>10.2f}%")
+            print(f"    {'Sharpe Ratio:':<30} {metrics.get('sharpe_ratio', 0):>10.2f}")
+            print(f"    {'Sortino Ratio:':<30} {metrics.get('sortino_ratio', 0):>10.2f}")
+            print(f"    {'Max Drawdown:':<30} {metrics.get('max_drawdown_pct', 0):>10.2f}%")
+            print(f"    {'Number of Trades:':<30} {metrics.get('num_trades', 0):>10d}")
+            print(f"    {'Win Rate:':<30} {metrics.get('win_rate', 0)*100:>10.2f}%")
+            print(f"    {'Final Capital:':<30} ${metrics.get('final_capital', 0):>10,.2f}")
+            print(f"    {'─' * 60}")
+
+            record = {
+                'pair': pair_name,
+                'leader': leader,
+                'lagger': lagger,
+                'lag_periods': lag,
+                'base_correlation': row.get('base_correlation'),
+                'max_correlation': row.get('max_correlation'),
+                'coint_pvalue': row.get('coint_pvalue'),
+                'coint_pass': row.get('coint_pass'),
+                'beta_est': row.get('beta_est'),
+                'group': group,
+                'direction': direction,
+                'total_return_pct': metrics.get('total_return_pct'),
+                'sharpe_ratio': metrics.get('sharpe_ratio'),
+                'sortino_ratio': metrics.get('sortino_ratio'),
+                'max_drawdown_pct': metrics.get('max_drawdown_pct'),
+                'num_trades': metrics.get('num_trades'),
+                'win_rate': metrics.get('win_rate'),
+                'final_capital': metrics.get('final_capital'),
+            }
+
+            bucket_records.append(record)
+
+            all_results[pair_name] = {
+                'leader': leader,
+                'lagger': lagger,
+                'lag': lag,
+                'signals': signals,
+                'backtest': backtest_results,
+                'metrics': metrics,
+                'category': f"{group} ({direction})",
+                'lead_lag_row': row
+            }
+
+        if not bucket_records:
+            print("  ⚠️  No successful backtests for this bucket.")
+            bucket_summaries.append({
+                'group': group,
+                'direction': direction,
+                'pair_count': 0,
+                'sharpe_mean': float('nan'),
+                'max_drawdown_median': float('nan'),
+                'num_trades_mean': float('nan'),
+                'win_rate_mean': float('nan')
+            })
             continue
 
-        signal_counts = signals['signal'].value_counts()
-        print(f"\n  Signal Distribution:")
-        for sig, count in signal_counts.items():
-            print(f"    {sig:25s}: {count:6d}")
+        bucket_df = pd.DataFrame(bucket_records)
+        csv_path = os.path.join('reports', f"backtest_{group}_{direction}.csv")
+        bucket_df.to_csv(csv_path, index=False)
+        print(f"  ✓ Saved bucket results to {csv_path}")
 
-        print(f"\n  Running backtest...")
-        bt_config = BacktestConfig(
-            initial_capital=initial_capital,
-            transaction_cost=transaction_cost,
-            position_size=1.0
-        )
-        backtester = Backtester(bt_config)
-
-        backtest_results = backtester.run_backtest(signals, prices, leader, lagger)
-        metrics = backtest_results['metrics']
-
-        if not metrics:
-            print("  ⚠️  Backtest did not produce metrics (check data sufficiency).")
-            continue
-
-        print(f"\n  ✓ Backtest Results:")
-        print(f"    {'─' * 60}")
-        print(f"    {'Total Return:':<30} {metrics.get('total_return_pct', 0):>10.2f}%")
-        print(f"    {'Sharpe Ratio:':<30} {metrics.get('sharpe_ratio', 0):>10.2f}")
-        print(f"    {'Sortino Ratio:':<30} {metrics.get('sortino_ratio', 0):>10.2f}")
-        print(f"    {'Max Drawdown:':<30} {metrics.get('max_drawdown_pct', 0):>10.2f}%")
-        print(f"    {'Number of Trades:':<30} {metrics.get('num_trades', 0):>10d}")
-        print(f"    {'Win Rate:':<30} {metrics.get('win_rate', 0)*100:>10.2f}%")
-        print(f"    {'Final Capital:':<30} ${metrics.get('final_capital', 0):>10,.2f}")
-        print(f"    {'─' * 60}")
-
-        all_results[pair_name] = {
-            'leader': leader,
-            'lagger': lagger,
-            'lag': lag,
-            'signals': signals,
-            'backtest': backtest_results,
-            'metrics': metrics,
-            'category': category,
-            'lead_lag_row': row
+        bucket_summary = {
+            'group': group,
+            'direction': direction,
+            'pair_count': len(bucket_records),
+            'sharpe_mean': bucket_df['sharpe_ratio'].mean(),
+            'max_drawdown_median': bucket_df['max_drawdown_pct'].median(),
+            'num_trades_mean': bucket_df['num_trades'].mean(),
+            'win_rate_mean': bucket_df['win_rate'].mean(),
         }
+        bucket_summaries.append(bucket_summary)
+
+    summary_df = pd.DataFrame(bucket_summaries)
+    summary_csv = os.path.join('reports', 'summary_groups.csv')
+    summary_df.to_csv(summary_csv, index=False)
+    print(f"\n✓ Saved aggregated summary to {summary_csv}")
 
     # Check if any results were generated
     if len(all_results) == 0:
@@ -373,17 +475,20 @@ def run_full_analysis(
     print(f"Reports generated: {len(all_results)}")
 
     # Summary table
-    print("\n📋 SUMMARY TABLE:")
+    print("\n📋 SUMMARY TABLE (BY BUCKET):")
     print("=" * 67)
-    print(f"{'Category':<15} {'Pair':<25} {'Return %':>10} {'Sharpe':>8} {'MaxDD %':>10} {'Trades':>8}")
+    print(f"{'Group':<18} {'Direction':<12} {'Pairs':>5} {'Sharpe_mean':>14} "
+          f"{'MaxDD_median':>15} {'Trades_avg':>12}")
     print("─" * 67)
 
-    for pair_name, result in all_results.items():
-        m = result['metrics']
-        category = result.get('category', 'N/A')
-        print(f"{category:<15} {pair_name:<25} {m.get('total_return_pct', 0):>10.2f} "
-              f"{m.get('sharpe_ratio', 0):>8.2f} {m.get('max_drawdown_pct', 0):>10.2f} "
-              f"{m.get('num_trades', 0):>8d}")
+    for _, row in summary_df.iterrows():
+        group = row['group']
+        direction = row['direction']
+        pairs = int(row['pair_count']) if not pd.isna(row['pair_count']) else 0
+        sharpe_str = _format_metric(row['sharpe_mean'])
+        maxdd_str = _format_metric(row['max_drawdown_median'])
+        trades_str = _format_metric(row['num_trades_mean'])
+        print(f"{group:<18} {direction:<12} {pairs:>5d} {sharpe_str:>14} {maxdd_str:>15} {trades_str:>12}")
 
     print("=" * 67)
 
@@ -392,7 +497,8 @@ def run_full_analysis(
         'correlations': corr_matrix,
         'pair_candidates': category_pairs,
         'lead_lag_analysis': category_analysis,
-        'results': all_results
+        'results': all_results,
+        'group_summary': summary_df
     }
 
 

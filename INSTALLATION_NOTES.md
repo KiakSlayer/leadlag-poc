@@ -65,7 +65,7 @@ import pandas as pd
 sp500_data = pd.read_csv('sp500_1min.csv', parse_dates=['timestamp'], index_col='timestamp')
 
 # Then use directly in the analysis
-from crossasset_leadlag_model import CrossAssetLeadLagModel
+from core.crossasset_leadlag_model import CrossAssetLeadLagModel
 
 prices = pd.DataFrame({
     'BTCUSDT': btc_data['close'],
@@ -81,10 +81,10 @@ You can test the core functionality without yfinance:
 
 ```bash
 # Test individual modules
-python test_data_fetcher_fix.py      # Tests the timestamp fix
-python correlation_analyzer.py       # Requires pandas only
-python crossasset_leadlag_model.py   # Requires pandas only
-python backtester.py                 # Requires pandas only
+python legacy/test_data_fetcher_fix.py      # Tests the timestamp fix
+python core/correlation_analyzer.py       # Requires pandas only
+python core/crossasset_leadlag_model.py   # Requires pandas only
+python core/backtester.py                 # Requires pandas only
 ```
 
 ## Minimal Installation for Testing
@@ -95,7 +95,7 @@ pip install pandas numpy matplotlib
 
 # Test with crypto-only data
 python -c "
-from data_fetcher import DataFetcher
+from core.data_fetcher import DataFetcher
 fetcher = DataFetcher()
 data = fetcher.fetch_crypto_ohlcv('BTCUSDT', interval='1m', limit=100)
 print(data.head())
@@ -121,7 +121,7 @@ Test your installation:
 ```bash
 python -c "import pandas, numpy, matplotlib; print('✓ Core dependencies OK')"
 python -c "import yfinance; print('✓ yfinance OK')"
-python test_data_fetcher_fix.py
+python legacy/test_data_fetcher_fix.py
 ```
 
 ## Support

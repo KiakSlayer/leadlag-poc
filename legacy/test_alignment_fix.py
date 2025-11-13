@@ -163,7 +163,7 @@ else:
 print("\n" + "=" * 70)
 print("4. Testing error handling with empty DataFrames...")
 
-from correlation_analyzer import CorrelationAnalyzer
+from core.correlation_analyzer import CorrelationAnalyzer
 
 # Test with empty DataFrame
 empty_prices = pd.DataFrame()
