@@ -378,9 +378,9 @@ class Backtester:
 
 if __name__ == "__main__":
     # Test the backtester
-    from data_fetcher import DataFetcher
-    from correlation_analyzer import CorrelationAnalyzer
-    from crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
+    from core.data_fetcher import DataFetcher
+    from core.correlation_analyzer import CorrelationAnalyzer
+    from core.crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
 
     print("=" * 60)
     print("Testing Backtester")

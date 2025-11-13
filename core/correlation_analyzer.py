@@ -264,9 +264,27 @@ class CorrelationAnalyzer:
         Returns:
             DataFrame with analysis results
         """
+        cointegrated_pairs = self.filter_cointegrated_pairs(
+            pairs,
+            significance_level=0.05,
+            verbose=False
+        )
+
         results = []
 
-        for asset1, asset2, base_corr in pairs:
+        for asset1, asset2, base_corr, coint_meta in cointegrated_pairs:
+            beta_est = coint_meta.get('beta_est', float('nan'))
+
+            if not np.isfinite(beta_est):
+                continue
+
+            if beta_est > 0.3:
+                direction = "direct"
+            elif beta_est < -0.3:
+                direction = "inverse"
+            else:
+                continue
+
             lag, max_corr = self.detect_lead_lag(asset1, asset2, max_lag)
 
             lead_lag_str = ""
@@ -283,6 +301,16 @@ class CorrelationAnalyzer:
                 leader = asset1
                 lagger = asset2
 
+            asset1_is_crypto = "USDT" in asset1
+            asset2_is_crypto = "USDT" in asset2
+
+            if asset1_is_crypto and asset2_is_crypto:
+                group = "crypto-crypto"
+            elif asset1_is_crypto or asset2_is_crypto:
+                group = "crypto-index"
+            else:
+                group = "index-index"
+
             results.append({
                 'pair': f"{asset1}-{asset2}",
                 'leader': leader,
@@ -290,7 +318,12 @@ class CorrelationAnalyzer:
                 'base_correlation': base_corr,
                 'lag_periods': lag,
                 'max_correlation': max_corr,
-                'relationship': lead_lag_str
+                'relationship': lead_lag_str,
+                'coint_pvalue': coint_meta.get('coint_pvalue', float('nan')),
+                'coint_pass': coint_meta.get('coint_pass', False),
+                'beta_est': beta_est,
+                'group': group,
+                'direction': direction
             })
 
         df = pd.DataFrame(results)
@@ -300,7 +333,8 @@ class CorrelationAnalyzer:
             # Return empty DataFrame with expected columns
             return pd.DataFrame(columns=[
                 'pair', 'leader', 'lagger', 'base_correlation',
-                'lag_periods', 'max_correlation', 'relationship'
+                'lag_periods', 'max_correlation', 'relationship',
+                'coint_pvalue', 'coint_pass', 'beta_est', 'group', 'direction'
             ])
 
         return df.sort_values('max_correlation', ascending=False, key=abs)
@@ -478,55 +512,81 @@ class CorrelationAnalyzer:
         pairs: List[Tuple[str, str, float]],
         significance_level: float = 0.05,
         verbose: bool = True
-    ) -> List[Tuple[str, str, float, Dict]]:
-        """
-        Filter pairs by cointegration test
+    ) -> List[Tuple[str, str, float, Dict[str, float]]]:
+        """Filter candidate pairs using the Engle–Granger cointegration test."""
 
-        This is the KEY FUNCTION for Kiak's deliverable!
-        Only keeps pairs that pass the Engle-Granger cointegration test (p < 0.05)
+        def _ols_beta(series_y: pd.Series, series_x: pd.Series) -> float:
+            x_vals = series_x.to_numpy(dtype=float)
+            y_vals = series_y.to_numpy(dtype=float)
 
-        Args:
-            pairs: List of (asset1, asset2, correlation) tuples
-            significance_level: P-value threshold (default: 0.05)
-            verbose: Print detailed results
+            if len(x_vals) == 0 or len(y_vals) == 0:
+                return float("nan")
 
-        Returns:
-            List of (asset1, asset2, correlation, coint_results) tuples
-            Only includes cointegrated pairs
-        """
-        cointegrated_pairs = []
+            x_mean = np.mean(x_vals)
+            y_mean = np.mean(y_vals)
+            denom = np.sum((x_vals - x_mean) ** 2)
+
+            if denom == 0:
+                return float("nan")
+
+            return float(np.sum((x_vals - x_mean) * (y_vals - y_mean)) / denom)
+
+        cointegrated_pairs: List[Tuple[str, str, float, Dict[str, float]]] = []
 
         if verbose:
-            print(f"\n{'='*70}")
-            print(f"🧪 COINTEGRATION TEST (Engle-Granger)")
+            print(f"\n{'=' * 70}")
+            print("🧪 COINTEGRATION TEST (Engle-Granger)")
             print(f"   Significance Level: {significance_level}")
             print(f"   Testing {len(pairs)} pairs...")
-            print(f"{'='*70}\n")
+            print(f"{'=' * 70}\n")
 
         for asset1, asset2, correlation in pairs:
-            coint_result = self.test_cointegration(asset1, asset2, significance_level)
+            if asset1 not in self.prices.columns or asset2 not in self.prices.columns:
+                continue
+
+            pair_prices = self.prices[[asset1, asset2]].dropna()
+
+            if pair_prices.empty:
+                continue
+
+            series1 = pair_prices[asset1].astype(float)
+            series2 = pair_prices[asset2].astype(float)
+
+            try:
+                _test_stat, p_value, _crit_values = coint(series1, series2)
+            except Exception:
+                p_value = float("nan")
+
+            coint_pass = bool(np.isfinite(p_value) and p_value < significance_level)
+
+            beta_est = _ols_beta(series1, series2) if coint_pass else float("nan")
 
             if verbose:
-                status = "✓ PASS" if coint_result['cointegrated'] else "✗ FAIL"
+                status = "✓ PASS" if coint_pass else "✗ FAIL"
+                pv_text = f"{p_value:.4f}" if np.isfinite(p_value) else "nan"
+                beta_text = f"{beta_est:+.4f}" if np.isfinite(beta_est) else "nan"
                 print(f"{status} | {asset1:15s} <-> {asset2:10s}")
-                print(f"        P-value: {coint_result['p_value']:.4f} | Corr: {correlation:+.4f} | β: {coint_result.get('hedge_ratio', 0):.4f}")
-
-                if 'error' in coint_result:
-                    print(f"        Error: {coint_result['error']}")
-
-                if coint_result['cointegrated']:
-                    print(f"        ✓ Cointegrated (stable long-term relationship)")
-                else:
-                    print(f"        ✗ Not cointegrated (unstable relationship)")
+                print(f"        P-value: {pv_text} | Corr: {correlation:+.4f} | β: {beta_text}")
                 print()
 
-            if coint_result['cointegrated']:
-                cointegrated_pairs.append((asset1, asset2, correlation, coint_result))
+            if coint_pass:
+                cointegrated_pairs.append(
+                    (
+                        asset1,
+                        asset2,
+                        correlation,
+                        {
+                            "coint_pvalue": float(p_value),
+                            "coint_pass": True,
+                            "beta_est": float(beta_est),
+                        },
+                    )
+                )
 
         if verbose:
-            print(f"{'='*70}")
+            print(f"{'=' * 70}")
             print(f"RESULTS: {len(cointegrated_pairs)}/{len(pairs)} pairs are cointegrated")
-            print(f"{'='*70}\n")
+            print(f"{'=' * 70}\n")
 
         return cointegrated_pairs
 
@@ -564,7 +624,7 @@ class CorrelationAnalyzer:
 
 if __name__ == "__main__":
     # Test the correlation analyzer
-    from data_fetcher import DataFetcher
+    from core.data_fetcher import DataFetcher
 
     print("=" * 60)
     print("Testing Correlation Analyzer")
