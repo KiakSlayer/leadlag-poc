@@ -28,7 +28,7 @@ KeyError: 'max_correlation'
 
 ## ✅ Solutions Implemented
 
-### 1. Enhanced Timestamp Alignment (`data_fetcher.py`)
+### 1. Enhanced Timestamp Alignment (`core/data_fetcher.py`)
 
 **New algorithm in `align_timestamps()`:**
 
@@ -61,7 +61,7 @@ keep_only_timestamps_where_all_assets_have_data()
 - ✅ Detailed debug output showing date ranges
 - ✅ Warnings for insufficient data
 
-### 2. Error Handling (`correlation_analyzer.py`)
+### 2. Error Handling (`core/correlation_analyzer.py`)
 
 **Added safety checks:**
 ```python
@@ -101,7 +101,7 @@ if len(lead_lag_analysis) == 0:
 
 ## 🧪 Testing
 
-**Test file:** `test_alignment_fix.py`
+**Test file:** `legacy/test_alignment_fix.py`
 
 All tests pass ✅:
 
@@ -186,7 +186,7 @@ KeyError: 'max_correlation'                  ← 💥 CRASH
 
 ### Test 1: Alignment with mock data
 ```bash
-python test_alignment_fix.py
+python legacy/test_alignment_fix.py
 ```
 
 Expected output:
@@ -256,10 +256,10 @@ python main_crossasset_poc.py --crypto BTCUSDT ETHUSDT --period 5d
 
 | File | Changes | Status |
 |------|---------|--------|
-| `data_fetcher.py` | Enhanced `align_timestamps()` with 4-step normalization | ✅ Fixed |
-| `correlation_analyzer.py` | Added empty DataFrame handling | ✅ Fixed |
+| `core/data_fetcher.py` | Enhanced `align_timestamps()` with 4-step normalization | ✅ Fixed |
+| `core/correlation_analyzer.py` | Added empty DataFrame handling | ✅ Fixed |
 | `main_crossasset_poc.py` | Added validation gates with suggestions | ✅ Fixed |
-| `test_alignment_fix.py` | NEW comprehensive test suite | ✅ Created |
+| `legacy/test_alignment_fix.py` | NEW comprehensive test suite | ✅ Created |
 
 ---
 

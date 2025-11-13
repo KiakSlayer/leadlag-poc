@@ -379,9 +379,9 @@ class StrategyVisualizer:
 
 if __name__ == "__main__":
     # Test the visualizer
-    from data_fetcher import DataFetcher
-    from crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
-    from backtester import Backtester, BacktestConfig
+    from core.data_fetcher import DataFetcher
+    from core.crossasset_leadlag_model import CrossAssetLeadLagModel, ModelConfig
+    from core.backtester import Backtester, BacktestConfig
 
     print("=" * 60)
     print("Testing Visualizer")
